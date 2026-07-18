@@ -1,0 +1,2 @@
+## Overview
+Project Halcyon is an edge-AI security camera developed by Northwind Robotics, a company headquartered in Tallinn, Estonia. Development began in March 2023, and the first production unit shipped on 14 November 2024. The project lead is Dr. Ingrid Salu; the hardware workstream is owned by Marcus Vey, and the firmware workstream by Priya Nandakumar. The codename "Halcyon" was chosen after the team rejected an earlier proposal, "Kingfisher."

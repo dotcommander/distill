@@ -1,0 +1,4 @@
+- Base unit retails for $349.
+- Pro tier includes cloud synchronization and costs $499.
+- Enterprise pricing starts at $12,000 for a 25-unit deployment.
+- Northwind offers a 36-month warranty across all tiers.

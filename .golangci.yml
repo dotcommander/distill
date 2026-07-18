@@ -1,0 +1,124 @@
+# distill lint policy — golangci-lint v2
+# Mirrors the workspace policy (~/go/src/.golangci.yml; source: ~/.claude/rules/go-lint-pack.md).
+# Per-repo file so `golangci-lint run ./...` is self-contained for public release.
+
+version: "2"
+
+linters:
+  enable:
+    # Correctness
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    # Security
+    - gosec
+    # Strict
+    - gocritic
+    - gocyclo
+    - dupl
+    # LLM-Friendly Clean Code
+    - gocognit
+    - funlen
+    - nestif
+    - goconst
+    - gochecknoinits
+    - gochecknoglobals
+    - revive
+    # Resource Safety
+    - bodyclose
+    - sqlclosecheck
+    - noctx
+    # Error Handling
+    - errorlint
+    - nilerr
+    # Correctness
+    - exhaustive
+    - unparam
+    - unconvert
+    - copyloopvar
+    - fatcontext
+    - nakedret
+    # Performance
+    - perfsprint
+    # slog Hygiene
+    - sloglint
+
+  settings:
+    gocyclo:
+      min-complexity: 15
+    gocognit:
+      min-complexity: 20
+    funlen:
+      lines: 80
+      statements: 50
+    nestif:
+      min-complexity: 4
+    goconst:
+      min-len: 2
+      min-occurrences: 3
+    dupl:
+      threshold: 100
+    exhaustive:
+      check:
+        - switch
+        - map
+    nakedret:
+      max-func-lines: 0
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-no-explanation: [funlen, gocognit]
+    perfsprint:
+      strconcat: false
+    sloglint:
+      no-global: all
+      context: scope
+    gosec:
+      excludes:
+        - G104  # deferred .Close() on read-only file
+        - G304  # validated path variables
+    govet:
+      enable:
+        - shadow
+    revive:
+      rules:
+        - name: exported
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: var-naming
+        - name: argument-limit
+          arguments: [5]
+        - name: function-result-limit
+          arguments: [3]
+        - name: cognitive-complexity
+          arguments: [20]
+        - name: empty-block
+        - name: unnecessary-stmt
+        - name: confusing-naming
+        - name: confusing-results
+
+  exclusions:
+    paths:
+      - vendor
+      - generated
+      - third_party
+    rules:
+      # Test files: relax noisy linters
+      - path: _test\.go
+        linters:
+          - dupl
+          - goconst
+          - bodyclose
+          - noctx
+          - funlen
+          - gosec
+      # cmd/ package: CLI command-wiring globals are idiomatic
+      - path: cmd/
+        linters:
+          - gochecknoglobals
+
+issues:
+  max-issues-per-linter: 20
+  max-same-issues: 5

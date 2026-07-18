@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>distill — fabrication detector</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.5rem; margin-bottom: .25rem; }
+  .sub { opacity: .7; margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid rgba(128,128,128,.3); }
+  th { font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; opacity: .7; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .gated { color: #c0392b; font-weight: 600; }
+  .kept { color: #27ae60; }
+  code { background: rgba(128,128,128,.15); padding: .1em .35em; border-radius: 3px; font-size: .9em; }
+  .note { background: rgba(241,196,15,.12); border-left: 3px solid #f1c40f; padding: .6rem .8rem; border-radius: 4px; margin: 1rem 0; font-size: .92rem; }
+  .markers { font-size: .9rem; opacity: .85; }
+</style>
+</head>
+<body>
+<h1>Fabrication detector — deterministic, source-specific</h1>
+<p class="sub">distill <code>digest-grade</code> candidate gate · source: Project Halcyon brief · 2026-06-24</p>
+
+<p>A free, offline checklist of phrases that are <strong>verified absent from the source</strong> yet appear in some digests — i.e. invented claims. Harvested from the panel/tournament judges' own flagged quotes, then confirmed not-in-source. Any match is a hallucination. The gate drops a digest with <strong>more than <code>maxFabrications</code> (=1)</strong> distinct fabrications, before any paid judging.</p>
+
+<h2>Markers (5)</h2>
+<p class="markers"><code>fourth milestone</code> &middot; <code>dual-bus</code> &middot; <code>no separate audio</code> &middot; <code>dozens of prototypes</code> &middot; <code>final quarter of 2025</code></p>
+
+<h2>Results — 3 of 37 digests flagged</h2>
+<table>
+  <thead><tr><th>Model</th><th class="num">Fabrications</th><th>Markers hit</th><th>Gate</th></tr></thead>
+  <tbody>
+    <tr><td>xiaomi-mimo-v2.5</td><td class="num">4</td><td class="markers">fourth milestone, dual-bus, no separate audio, final quarter of 2025</td><td class="gated">ELIMINATED</td></tr>
+    <tr><td>bytedance-seed-2.0-mini</td><td class="num">1</td><td class="markers">dozens of prototypes</td><td class="kept">kept (≤1)</td></tr>
+    <tr><td>z-ai-glm-5.2</td><td class="num">1</td><td class="markers">fourth milestone</td><td class="kept">kept (≤1)</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+<strong>Honest limitation.</strong> This is a <em>floor</em>, not the true fabrication rate. The checklist only catches the 5 specific invented phrases we have already seen judges flag <em>on this source</em>. Other digests almost certainly contain fabrications these markers miss, and the list does not transfer to a new source. For a complete, source-agnostic measure, an LLM precision pass (count unsupported claims per digest) is the generalizable option — deferred. Notably even the merit #1, <code>glm-5.2</code>, commits one fabrication ("the fourth milestone is implied"), so fidelity and merit diverge yet again.
+</div>
+</body>
+</html>

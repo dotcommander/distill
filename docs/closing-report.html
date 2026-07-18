@@ -1,0 +1,88 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>distill — model routing: closing report</title><style>
+body{font:14px/1.55 -apple-system,system-ui,sans-serif;margin:2rem auto;max-width:1180px;color:#1a1a1a;padding:0 1rem}
+h1{font-size:1.6rem;margin:0 0 .25rem}h2{font-size:1.15rem;margin:2rem 0 .5rem;border-bottom:2px solid #eee;padding-bottom:.25rem}
+p.sub{color:#666;margin:.25rem 0 1rem}
+table{border-collapse:collapse;width:100%;margin:.5rem 0}th,td{padding:.45rem .6rem;border-bottom:1px solid #eee;text-align:left}
+th{background:#fafafa;font-size:.78rem;text-transform:uppercase;letter-spacing:.03em;color:#555}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.win{color:#16a34a;font-weight:600}.bad{color:#dc2626}.dim{color:#999}
+.drop{background:#fff7f5}
+.note{background:#f6f8fa;border-radius:8px;padding:.7rem 1rem;margin:1rem 0;font-size:.92rem;color:#444}
+code{background:#f1f1f1;padding:.05rem .3rem;border-radius:3px;font-size:.9em}
+</style></head><body>
+
+<h1>distill model-routing eval — closing report</h1>
+<div class="note">
+<b>Update (2026-06-24): model selection is now remote-eval-primary.</b> Per-role model choice is driven by public benchmark leaderboards (EQ-Bench Creative Writing v3, Vectara HHEM, llm-stats Open LLM, Aider Polyglot) cross-referenced against the cost-capped roster. The local evals in this report are now the <b>secondary / fallback</b> signal. See the <a href="remote-eval-report.html">remote-eval report</a> and the <a href="remote-eval-crosswalk.md">crosswalk</a> (process of record).
+</div>
+<p class="sub">Which model to route to, by task. Four phases: digest (faithful summarization), label (classification + sentiment), comedy (entertaining writing), code (unit-test pass-rate). Candidate filter: <b>&le; $8.00 / 1M output tokens</b>.</p>
+
+<div class="note">
+<b>How to read this.</b> Two phases <b>saturate</b> — on label (classification/sentiment) and code, most models score at or near 100%, so accuracy there is <i>not</i> a routing signal; latency and cost are. The phases that genuinely separate models are <b>digest</b> (reading/faithfulness) and <b>comedy</b> (creativity). The <b>aggregate</b> is the mean rank across the three differentiating phases (digest, comedy, code); label is shown as context only; cost is a separate axis, never folded into quality. Judging used a de-biased leave-one-out + order-swap panel (digest, comedy); label and code are deterministic (no LLM judge).
+</div>
+
+<h2>Survivors — passed all four phases, within cost cap (ranked by aggregate)</h2>
+<table><thead><tr><th>Agg</th><th>Model</th><th class="num">$/1M out</th><th class="num">Digest</th><th class="num">Comedy</th><th class="num">Code</th><th>Label</th><th>Best for</th></tr></thead><tbody>
+<tr><td class="num win">1</td><td><b>deepseek/deepseek-v4-pro</b></td><td class="num">0.87</td><td class="num">#2</td><td class="num">#3 (4-2-1)</td><td class="num">100% · 1063ms</td><td>1.000 · fast</td><td class="win">best all-rounder, cheap</td></tr>
+<tr><td class="num">2</td><td><b>z-ai/glm-5.2</b></td><td class="num">3.08</td><td class="num win">#1</td><td class="num">#2 (6-1-1)</td><td class="num">100% · 6928ms</td><td>1.000 · slow</td><td>best reader; slow coder</td></tr>
+<tr><td class="num">3</td><td>qwen/qwen3.6-35b-a3b</td><td class="num">1.00</td><td class="num">#3</td><td class="num">#7 (5-0-3)</td><td class="num">100% · 3272ms</td><td>1.000 · mid</td><td>solid value all-rounder</td></tr>
+<tr><td class="num">4</td><td>google/gemma-4-31b-it</td><td class="num">0.35</td><td class="num">#12</td><td class="num">#4 (3-5-1)</td><td class="num">100% · 2000ms</td><td>1.000 · n/a*</td><td>cheap, punches up</td></tr>
+<tr><td class="num">5</td><td>moonshotai/kimi-k2.6</td><td class="num">3.41</td><td class="num">#11</td><td class="num win">#1 (7-0-0)</td><td class="num">84% · 15000ms</td><td>1.000 · slow</td><td class="win">comedy king; slow</td></tr>
+<tr><td class="num">5</td><td>bytedance-seed/seed-2.0-mini</td><td class="num">0.40</td><td class="num">#9</td><td class="num">#10 (3-1-1)</td><td class="num">100% · 2648ms</td><td>1.000 · fast</td><td>cheap, reliable code</td></tr>
+<tr><td class="num">7</td><td>openai/gpt-5-nano</td><td class="num">0.40</td><td class="num">#10</td><td class="num">#11 (1-2-1)</td><td class="num">100% · 2553ms</td><td>1.000 · fast</td><td>cheap code, weak prose</td></tr>
+<tr><td class="num">8</td><td>google/gemini-2.5-flash-lite</td><td class="num">0.40</td><td class="num">#7</td><td class="num">#8 (1-5-1)</td><td class="num bad">68% · 318ms</td><td class="win">1.000 · 82ms ⚡</td><td class="win">label/extraction speed king</td></tr>
+<tr><td class="num bad">9</td><td>amazon/nova-lite-v1</td><td class="num">0.24</td><td class="num bad">#9</td><td class="num bad">#12 (0-9-0)</td><td class="num">84% · 310ms</td><td>0.952 · fast</td><td>cheapest; weakest quality</td></tr>
+</tbody></table>
+<p class="sub">Digest/comedy ranks are within the original full field; aggregate uses within-survivor ranks. *gemma's sentiment run hit a transient provider error; classification was 1.000.</p>
+
+<h2>Dropped — and why</h2>
+<table><thead><tr><th>Model</th><th>Dropped at</th><th>Reason</th><th>What its data showed</th></tr></thead><tbody>
+<tr class="drop"><td>openai/gpt-5.5</td><td>cost filter</td><td>$30 / 1M output (&gt; $8 cap)</td><td>mid-pack everywhere: digest #4, comedy #5, code 100%. Not worth 35&times; deepseek's output price.</td></tr>
+<tr class="drop"><td>anthropic/claude-opus-4.8</td><td>cost filter</td><td>$25 / 1M output (&gt; $8 cap)</td><td>digest #5 after de-bias (was #1 only via self-preference); the only top model to miss a label item; code 100%.</td></tr>
+<tr class="drop"><td>xiaomi/mimo-v2.5</td><td>fabrication gate</td><td>4 invented claims in its digest (&gt; maxFabrications=1)</td><td>strong head-to-head record but fabricates facts — disqualifying for faithful work. Comedy #9, code 84%.</td></tr>
+<tr class="drop"><td>z-ai/glm-4.7-flash</td><td>comedy phase</td><td>failed generation: only 2/5 comedy topics produced a bit</td><td>fine elsewhere (code 100%, label 1.000) but could not complete the creative task.</td></tr>
+</tbody></table>
+
+<h2>Routing recommendations</h2>
+<table><thead><tr><th>Task</th><th>Route to</th><th>Why</th></tr></thead><tbody>
+<tr><td><b>Faithful summarization / reading</b></td><td class="win">glm-5.2</td><td>#1 digest; deepseek-v4-pro #2 at lower cost is the value pick.</td></tr>
+<tr><td><b>Classification / sentiment / extraction</b></td><td class="win">gemini-2.5-flash-lite</td><td>perfect accuracy, ~13&times; faster than the field (82ms/item), $0.40 out. Accuracy saturates — buy speed + price.</td></tr>
+<tr><td><b>Entertaining / creative writing</b></td><td class="win">kimi-k2.6</td><td>undefeated comedy (7-0-0); glm-5.2 #2 if you also need it elsewhere.</td></tr>
+<tr><td><b>Code</b></td><td class="win">deepseek-v4-pro</td><td>100% pass at the fastest 100% latency (1063ms), $0.87 out. Avoid gemini-flash-lite here (worst coder, 68%).</td></tr>
+<tr><td><b>Cheapest acceptable workhorse</b></td><td class="win">seed-2.0-mini / gemma-4-31b-it</td><td>$0.35-0.40 out, 100% code, full label accuracy. nova-lite is cheaper still but weakest on quality.</td></tr>
+<tr><td><b>Best single all-rounder</b></td><td class="win">deepseek-v4-pro</td><td>top-3 in every differentiating phase at $0.87/1M output.</td></tr>
+</tbody></table>
+
+<h2>Pipeline role assignments</h2>
+<table><thead><tr><th>Role</th><th>Model</th><th>Evidence</th></tr></thead><tbody>
+<tr><td><b>Reader / summarizer</b></td><td class="win">z-ai/glm-5.2</td><td>digest #1 — holds under zero-stake judges (see below)</td></tr>
+<tr><td><b>Writer (creative + draft)</b></td><td class="win">moonshotai/kimi-k2.6</td><td>comedy #1 (7-0-0); #1-2 digest under neutral judges. Caveat: priciest candidate ($3.41 out) + slowest.</td></tr>
+<tr><td><b>Judge / evaluator</b></td><td class="win">deepseek/deepseek-v4-pro</td><td>only TRUSTWORTHY calibrated judge (96.6% swap-robust, 3.4% position-bias)</td></tr>
+<tr><td><b>Classification / sentiment / extraction</b></td><td class="win">google/gemini-2.5-flash-lite</td><td>perfect + fastest (82ms/item) + cheap — but NEVER as a judge (see below)</td></tr>
+<tr><td><b>Code</b></td><td class="win">deepseek/deepseek-v4-pro</td><td>100% pass at fastest 100% latency</td></tr>
+<tr><td><b>Cheap workhorse</b></td><td class="win">seed-2.0-mini / gemma-4-31b-it</td><td>$0.35-0.40 out, full label/code accuracy</td></tr>
+</tbody></table>
+
+<h2>Who can judge? (calibration: discrimination + position bias)</h2>
+<p class="sub">Each judge is pitted against deterministic degradations of known-good digests (shuffle/truncate/cliché/listify) in both slot orders. Swap-robust accuracy = intact wins BOTH orders (guess &approx; 25%); position-bias = picks the same slot regardless of content (want &le;20%). A judge must be calibrated before its rankings are trusted.</p>
+<table><thead><tr><th>Judge</th><th class="num">Swap-robust</th><th class="num">Position-bias</th><th>Verdict</th></tr></thead><tbody>
+<tr><td class="win">deepseek/deepseek-v4-pro</td><td class="num">96.6%</td><td class="num">3.4%</td><td class="win">TRUSTWORTHY — the judge</td></tr>
+<tr><td>z-ai/glm-5.2</td><td class="num">89.7%</td><td class="num">10.3%</td><td class="bad">SUSPECT</td></tr>
+<tr><td>google/gemma-4-31b-it</td><td class="num">89.7%</td><td class="num">10.3%</td><td class="bad">SUSPECT</td></tr>
+<tr><td>qwen/qwen3.6-35b-a3b</td><td class="num">86.7%</td><td class="num">13.3%</td><td class="bad">SUSPECT</td></tr>
+<tr><td>google/gemini-2.5-flash-lite</td><td class="num bad">56.7%</td><td class="num bad">43.3%</td><td class="bad">SUSPECT — near-guessing; picks by slot position</td></tr>
+<tr><td>moonshotai/kimi-k2.6</td><td class="num dim">n/a</td><td class="num dim">n/a</td><td class="dim">calibration timed out (slowest model) — non-blocking; kimi is the writer, not a judge</td></tr>
+</tbody></table>
+<div class="note"><b>Judge lesson.</b> deepseek-v4-pro is the only TRUSTWORTHY in-budget judge — and it's also the best all-rounder. The label/extraction champion, gemini-flash-lite, is the <b>worst</b> judge (43% position bias = essentially picking by slot, not merit). Never deploy a model as a judge without calibrating it first.</div>
+
+<h2>Is glm-5.2's #1 real, or judge bias?</h2>
+<p>glm-5.2 recognizes its own output 8/8 (like opus &amp; gpt-5.5) — a red flag for using it <i>as a judge</i>. But its <b>#1 ranking is not self-inflated</b>: the panels used leave-one-out (it never judged its own matches), and re-judging the <b>fixed</b> digests with a <b>zero-stake panel</b> (opus + gpt-5.5, neither in the field) on the merit criterion is <b>TRUSTWORTHY</b> (flip 9.4%) and <b>still ranks glm-5.2 #1 (5-0-2)</b>. It recognizes its own writing because it genuinely is the best read, not from vanity.</p>
+<p>Reframing the judge question from "which is best?" to <b>"would you publish this?"</b> reorders the field (kimi #1, gemma #2, glm-5.2 #4) — but that run is <b>SUSPECT</b> (flip rate jumps to 29.4% &gt; 25%): publishability is a fuzzier, less order-robust criterion. <b>Merit stays the trusted lens</b>; the publish ranking is indicative only. (Side note: kimi tops <i>both</i> framings under neutral judges — a stronger digest writer than the original panel suggested.)</p>
+
+<div class="note">
+<b>Headline.</b> After de-biasing and the $8 output-cost filter, the two most expensive models (gpt-5.5, opus-4.8) win nothing they're worth paying for. glm-5.2's digest #1 is genuine (holds under zero-stake judges, not self-bias); deepseek-v4-pro is the best all-rounder AND the only trustworthy in-budget judge; kimi-k2.6 is the chosen writer. <b>deepseek-v4-pro</b> is the best value all-rounder; specialists beat generalists per task — <b>gemini-flash-lite</b> for label speed, <b>kimi-k2.6</b> for comedy, <b>glm-5.2</b> for reading. Models are task-shaped: the label champion (gemini-flash-lite) is the worst coder; the comedy king (kimi) is a slow, mid-pack summarizer.
+</div>
+
+</body></html>

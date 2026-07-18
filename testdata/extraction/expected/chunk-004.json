@@ -1,0 +1,19 @@
+{
+  "chunk": "chunk-004",
+  "facts": [
+    {"id": "model-count", "any": [["three models"], ["3 models"]]},
+    {"id": "concurrency", "any": [["concurrent"], ["concurrently"]]},
+    {"id": "person-task", "any": [["person-detection"], ["person detection"]]},
+    {"id": "person-arch", "anchors": ["yolov8n"]},
+    {"id": "person-fps", "any": [["30 frames"], ["30 fps"]]},
+    {"id": "lpr-task", "any": [["license-plate"], ["license plate"]]},
+    {"id": "lpr-fps", "any": [["12 frames"], ["12 fps"]]},
+    {"id": "lpr-limited", "any": [["limited"]]},
+    {"id": "gunshot-task", "anchors": ["gunshot"]},
+    {"id": "gunshot-audio", "any": [["audio"]]},
+    {"id": "gunshot-rate", "any": [["16 khz"], ["16khz"]]},
+    {"id": "memory-capacity", "any": [["8 gb"], ["8gb"]]},
+    {"id": "memory-type", "anchors": ["lpddr4"]},
+    {"id": "memory-shared", "any": [["shared"], ["share"], ["single"], ["pool"]]}
+  ]
+}

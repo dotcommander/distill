@@ -1,0 +1,15 @@
+{
+  "chunk": "chunk-005",
+  "facts": [
+    {"id": "base-price", "anchors": ["349"]},
+    {"id": "base-tier", "any": [["base unit"], ["base model"]]},
+    {"id": "pro-price", "anchors": ["499"]},
+    {"id": "pro-tier", "any": [["pro tier"], ["pro"]]},
+    {"id": "pro-feature", "any": [["cloud sync"], ["cloud synchronization"]]},
+    {"id": "enterprise-price", "any": [["12,000"], ["12000"]]},
+    {"id": "enterprise-units", "anchors": ["25"]},
+    {"id": "enterprise-tier", "any": [["enterprise"]]},
+    {"id": "warranty", "any": [["36-month"], ["36 month"]]},
+    {"id": "warranty-scope", "any": [["all tiers"], ["across all"]]}
+  ]
+}

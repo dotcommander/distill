@@ -1,0 +1,19 @@
+{
+  "chunk": "chunk-002",
+  "facts": [
+    {"id": "product-category", "any": [["security camera"]]},
+    {"id": "product-edge-ai", "any": [["edge-ai"], ["edge ai"]]},
+    {"id": "developer", "anchors": ["northwind"]},
+    {"id": "developer-full", "any": [["northwind robotics"]]},
+    {"id": "hq-city", "anchors": ["tallinn"]},
+    {"id": "hq-country", "anchors": ["estonia"]},
+    {"id": "dev-start", "any": [["march 2023"], ["mar 2023"], ["2023-03"]]},
+    {"id": "ship-date", "any": [["14 november 2024"], ["november 2024"], ["nov 2024"], ["14 nov 2024"], ["november 14"], ["2024-11-14"]]},
+    {"id": "ship-first-unit", "any": [["first production unit"], ["first production"]]},
+    {"id": "project-lead", "anchors": ["ingrid salu"]},
+    {"id": "hardware-owner", "anchors": ["marcus vey"]},
+    {"id": "firmware-owner", "anchors": ["priya nandakumar"]},
+    {"id": "codename-rejected", "anchors": ["kingfisher"]},
+    {"id": "codename-rejected-context", "any": [["rejected"], ["earlier proposal"]]}
+  ]
+}

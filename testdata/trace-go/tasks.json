@@ -1,0 +1,79 @@
+{
+  "cost_per_mtok": {
+    "z-ai/glm-5.2": 1.505,
+    "deepseek/deepseek-v4-pro": 0.544,
+    "openai/gpt-5.5": 11.25,
+    "anthropic/claude-opus-4.8": 10.0,
+    "qwen/qwen3.6-35b-a3b": 0.355,
+    "google/gemini-2.5-flash-lite-preview-09-2025": 0.175,
+    "xiaomi/mimo-v2.5": 0.175,
+    "bytedance-seed/seed-2.0-mini": 0.175,
+    "openai/gpt-5-nano": 0.1375,
+    "moonshotai/kimi-k2.6": 1.3475,
+    "google/gemma-4-31b-it": 0.1775,
+    "z-ai/glm-4.7-flash": 0.145,
+    "amazon/nova-lite-v1": 0.105
+  },
+  "tasks": [
+    {
+      "id": "bitchain",
+      "category": "bit_ops",
+      "program": "package main\nimport \"fmt\"\nfunc main() {\n\tvar x uint8 = 0xA5\n\tx = x<<3 | x>>5\n\tx ^= 0x3C\n\tx = x + 0x9B\n\tx = ^x\n\tfmt.Println(int(x))\n}\n",
+      "gold": "83"
+    },
+    {
+      "id": "twos_comp_mix",
+      "category": "signed_edges",
+      "program": "package main\nimport \"fmt\"\nfunc main() {\n\tvar a int32 = -1\n\ta = a << 31\n\tvar b int32 = ^a\n\tfmt.Printf(\"%d,%d\\n\", a, b)\n}\n",
+      "gold": "-2147483648,2147483647"
+    },
+    {
+      "id": "utf8_rune_steps",
+      "category": "unicode",
+      "program": "package main\nimport \"fmt\"\nfunc main() {\n\ts := \"a€漢\"\n\tfmt.Printf(\"%d:%d\\n\", len(s), len([]rune(s)))\n}\n",
+      "gold": "7:3"
+    },
+    {
+      "id": "map_stable",
+      "category": "control_flow",
+      "program": "package main\nimport \"fmt\"\nfunc main() {\n\tm := map[int]int{7: 11, 2: 50, 9: 6, 0: 324}\n\tkeys := []int{0, 2, 7, 9}\n\tacc := 0\n\tfor _, k := range keys {\n\t\tv := m[k]\n\t\tacc = ((acc << 5) - acc) ^ (v + k)\n\t}\n\tfmt.Println(acc)\n}\n",
+      "gold": "9601881"
+    },
+    {
+      "id": "int_div_floor",
+      "category": "numeric_edges",
+      "program": "package main\nimport \"fmt\"\nfunc main() {\n\tfmt.Printf(\"%d,%d,%d\\n\", -7/2, 5/2, -5/4)\n}\n",
+      "gold": "-3,2,-1"
+    },
+    {
+      "id": "bitmask_cascade",
+      "category": "bit_ops",
+      "program": "package main\nimport \"fmt\"\nfunc main() {\n\tx := uint32(0xF0F0AA55)\n\tx = (x & 0x00FF00FF) ^ ((x >> 8) & 0x0000FFFF) ^ 0x0000002A\n\tfmt.Println(int(x & 0xFF))\n}\n",
+      "gold": "213"
+    },
+    {
+      "id": "float_to_int_safe",
+      "category": "numeric_edges",
+      "program": "package main\nimport \"fmt\"\nfunc main() {\n\tf := 1.5\n\tfor i := 0; i < 8; i++ {\n\t\tf = f*1.25 + 0.75\n\t}\n\tn := int64(f*100) % 20000\n\tif n < 0 {\n\t\tn = -n\n\t}\n\tfmt.Println(n + 337)\n}\n",
+      "gold": "2719"
+    },
+    {
+      "id": "shift_prec",
+      "category": "bit_ops",
+      "program": "package main\nimport \"fmt\"\nfunc main() {\n\tx := 1\n\tx = x << (2 + 3)\n\tx = (x & 0x3FF) << 1\n\tx = (x << 3) << 0\n\tfmt.Println(x)\n}\n",
+      "gold": "512"
+    },
+    {
+      "id": "rune_walk_sum",
+      "category": "unicode",
+      "program": "package main\nimport \"fmt\"\nfunc main() {\n\ts := \"ZßΩ𐍈\"\n\tsum := 0\n\tfor _, r := range s {\n\t\tsum += int(r % 997)\n\t}\n\tfmt.Println(sum)\n}\n",
+      "gold": "1824"
+    },
+    {
+      "id": "carry_chain_u16",
+      "category": "bit_ops",
+      "program": "package main\nimport \"fmt\"\nfunc main() {\n\tvar x uint16 = 0xFFF0\n\tx += 0x0020\n\tx ^= 0x0005\n\tx = (x << 4) | (x >> 12)\n\tfmt.Println(int(x))\n}\n",
+      "gold": "336"
+    }
+  ]
+}

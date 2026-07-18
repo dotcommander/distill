@@ -1,0 +1,5 @@
+- Under continuous gunshot-classifier load, the device occasionally overheats above 60°C.
+- Engineering has not confirmed the root cause of the overheating.
+- Battery-backup runtime is estimated at around 4 hours.
+- Field tests for battery-backup runtime have ranged from 2.5 to 5 hours.
+- The license-plate model's accuracy on non-Latin scripts is currently unverified.

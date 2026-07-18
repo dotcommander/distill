@@ -1,0 +1,86 @@
+{
+  "cost_per_mtok": {
+    "z-ai/glm-5.2": 1.505,
+    "deepseek/deepseek-v4-pro": 0.544,
+    "openai/gpt-5.5": 11.25,
+    "anthropic/claude-opus-4.8": 10.0,
+    "qwen/qwen3.6-35b-a3b": 0.355,
+    "google/gemini-2.5-flash-lite-preview-09-2025": 0.175,
+    "xiaomi/mimo-v2.5": 0.175,
+    "bytedance-seed/seed-2.0-mini": 0.175,
+    "openai/gpt-5-nano": 0.1375,
+    "moonshotai/kimi-k2.6": 1.3475,
+    "google/gemma-4-31b-it": 0.1775,
+    "z-ai/glm-4.7-flash": 0.145,
+    "amazon/nova-lite-v1": 0.105
+  },
+  "problems": [
+    {
+      "id": "two_sum",
+      "prompt": "Return the indices of the two numbers in nums that add up to target. Exactly one solution exists and you may not use the same element twice. Return the indices in ascending order.",
+      "signature": "func TwoSum(nums []int, target int) []int",
+      "func_name": "TwoSum",
+      "cases": [
+        {"call": "TwoSum([]int{2, 7, 11, 15}, 9)", "want": "[]int{0, 1}"},
+        {"call": "TwoSum([]int{3, 2, 4}, 6)", "want": "[]int{1, 2}"},
+        {"call": "TwoSum([]int{3, 3}, 6)", "want": "[]int{0, 1}"}
+      ]
+    },
+    {
+      "id": "reverse_string",
+      "prompt": "Return the input string reversed, correctly handling multi-byte UTF-8 runes (reverse by rune, not by byte).",
+      "signature": "func ReverseString(s string) string",
+      "func_name": "ReverseString",
+      "cases": [
+        {"call": "ReverseString(\"hello\")", "want": "\"olleh\""},
+        {"call": "ReverseString(\"\")", "want": "\"\""},
+        {"call": "ReverseString(\"héllo\")", "want": "\"olléh\""}
+      ]
+    },
+    {
+      "id": "fizzbuzz",
+      "prompt": "Return a slice of length n where index i (1-based value i+1) is \"Fizz\" if divisible by 3, \"Buzz\" if divisible by 5, \"FizzBuzz\" if divisible by both, else the number as a decimal string.",
+      "signature": "func FizzBuzz(n int) []string",
+      "func_name": "FizzBuzz",
+      "cases": [
+        {"call": "FizzBuzz(5)", "want": "[]string{\"1\", \"2\", \"Fizz\", \"4\", \"Buzz\"}"},
+        {"call": "FizzBuzz(3)", "want": "[]string{\"1\", \"2\", \"Fizz\"}"},
+        {"call": "FizzBuzz(15)", "want": "[]string{\"1\", \"2\", \"Fizz\", \"4\", \"Buzz\", \"Fizz\", \"7\", \"8\", \"Fizz\", \"Buzz\", \"11\", \"Fizz\", \"13\", \"14\", \"FizzBuzz\"}"}
+      ]
+    },
+    {
+      "id": "is_palindrome",
+      "prompt": "Return true if the string is a palindrome (reads the same forwards and backwards), comparing the exact characters as given. The empty string is a palindrome.",
+      "signature": "func IsPalindrome(s string) bool",
+      "func_name": "IsPalindrome",
+      "cases": [
+        {"call": "IsPalindrome(\"racecar\")", "want": "true"},
+        {"call": "IsPalindrome(\"hello\")", "want": "false"},
+        {"call": "IsPalindrome(\"\")", "want": "true"}
+      ]
+    },
+    {
+      "id": "fib",
+      "prompt": "Return the nth Fibonacci number (0-indexed: Fib(0)=0, Fib(1)=1, Fib(n)=Fib(n-1)+Fib(n-2)).",
+      "signature": "func Fib(n int) int",
+      "func_name": "Fib",
+      "cases": [
+        {"call": "Fib(0)", "want": "0"},
+        {"call": "Fib(1)", "want": "1"},
+        {"call": "Fib(10)", "want": "55"},
+        {"call": "Fib(7)", "want": "13"}
+      ]
+    },
+    {
+      "id": "max_subarray",
+      "prompt": "Return the largest sum of any contiguous non-empty subarray (Kadane's algorithm).",
+      "signature": "func MaxSubArray(nums []int) int",
+      "func_name": "MaxSubArray",
+      "cases": [
+        {"call": "MaxSubArray([]int{-2, 1, -3, 4, -1, 2, 1, -5, 4})", "want": "6"},
+        {"call": "MaxSubArray([]int{1})", "want": "1"},
+        {"call": "MaxSubArray([]int{-1, -2})", "want": "-1"}
+      ]
+    }
+  ]
+}

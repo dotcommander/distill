@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>distill digest polished bakeoff</title>
+  <style>
+    body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:24px;color:#1f2937;background:#fff}
+    h1{font-size:24px;margin:0 0 6px} .sub{color:#5b6472;margin:0 0 18px}
+    table{border-collapse:collapse;width:100%;table-layout:fixed}
+    th,td{border:1px solid #d8dde6;padding:10px;vertical-align:top}
+    th{background:#f3f5f8;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+    code{font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}
+    .ok{color:#166534;font-weight:600}.warn{color:#9a3412;font-weight:600}.small{font-size:12px;color:#5b6472}
+  </style>
+</head>
+<body>
+  <h1>Digest Polished Bakeoff</h1>
+  <p class="sub">Comparison matrix for the four digest modes used to evaluate polished output. Live provider metrics should be filled from each mode's artifacts after a paid run.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Mode</th>
+        <th>Command</th>
+        <th>Output Path</th>
+        <th>Ledger / Sections</th>
+        <th>Coverage / Citations / Precision</th>
+        <th>Excerpt Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><b>13-section cascade</b></td>
+        <td><code>distill digest SOURCE.md --cascade --max-sections 13 --out runs/cascade-13.md --artifacts runs/cascade-13-artifacts</code></td>
+        <td><code>runs/cascade-13.md</code></td>
+        <td><span class="warn">Pending live run</span><br><span class="small">Inspect run-ledger.jsonl and responses/outline.md.</span></td>
+        <td><span class="warn">Pending</span><br><span class="small">Use responses/coverage.json; citation and precision files only exist when enabled.</span></td>
+        <td>Baseline for cascade extraction with a larger section cap.</td>
+      </tr>
+      <tr>
+        <td><b>Precision-only</b></td>
+        <td><code>distill digest SOURCE.md --check-precision --min-precision 0.95 --out runs/precision-only.md --artifacts runs/precision-only-artifacts</code></td>
+        <td><code>runs/precision-only.md</code></td>
+        <td><span class="warn">Pending live run</span><br><span class="small">Ledger should include precision calls.</span></td>
+        <td><span class="warn">Pending</span><br><span class="small">Inspect responses/precision.json for unsupported sentences.</span></td>
+        <td>Separates sentence-support judging from cluster/citation behavior.</td>
+      </tr>
+      <tr>
+        <td><b>Merge-target</b></td>
+        <td><code>distill digest SOURCE.md --merge-facts --outline-from-clusters --max-sections 8 --out runs/merge-target.md --artifacts runs/merge-target-artifacts</code></td>
+        <td><code>runs/merge-target.md</code></td>
+        <td><span class="warn">Pending live run</span><br><span class="small">Inspect facts.merged.md and outline fact distribution.</span></td>
+        <td><span class="warn">Pending</span><br><span class="small">Coverage from responses/coverage.json.</span></td>
+        <td>Shows the effect of cluster planning before citation and precision gates.</td>
+      </tr>
+      <tr>
+        <td><b>Polished</b></td>
+        <td><code>distill digest SOURCE.md --cascade --merge-facts --outline-from-clusters --cite --repair --check-precision --min-cited 0.90 --min-precision 0.95 --max-sections 8 --out runs/polished.md --artifacts runs/polished-artifacts</code></td>
+        <td><code>runs/polished.md</code></td>
+        <td><span class="ok">Dry-run/test-covered</span><br><span class="small">Estimator-vs-ledger test covers cite repair and precision repair paths.</span></td>
+        <td><span class="ok">Artifact contract covered</span><br><span class="small">Expected: coverage.json, citations.json, precision.json, run-ledger.jsonl.</span></td>
+        <td>Current recommended high-quality path. Fill excerpts from the final article and rewrite.cited.md after live execution.</td>
+      </tr>
+    </tbody>
+  </table>
+</body>
+</html>

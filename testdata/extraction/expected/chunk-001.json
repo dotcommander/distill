@@ -1,0 +1,8 @@
+{
+  "chunk": "chunk-001",
+  "facts": [
+    {"id": "product-name", "anchors": ["halcyon"]},
+    {"id": "doc-type", "any": [["product brief"], ["internal product"]]},
+    {"id": "doc-internal", "any": [["internal"]]}
+  ]
+}

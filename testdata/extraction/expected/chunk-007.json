@@ -1,0 +1,16 @@
+{
+  "chunk": "chunk-007",
+  "facts": [
+    {"id": "overheat-temp", "anchors": ["60"], "any": [["overheat"], ["overheats"], ["overheating"]]},
+    {"id": "overheat-condition", "any": [["gunshot"]]},
+    {"id": "overheat-continuous", "any": [["continuous"]]},
+    {"id": "overheat-occasional", "any": [["occasional"], ["occasionally"]]},
+    {"id": "root-cause-open", "any": [["root cause"]]},
+    {"id": "root-cause-unconfirmed", "any": [["not confirmed"], ["not been confirmed"], ["unconfirmed"], ["has not confirmed"]]},
+    {"id": "battery-estimate", "any": [["4 hours"], ["four hours"], ["four-hour"]]},
+    {"id": "battery-field-min", "anchors": ["2.5"]},
+    {"id": "battery-field-max", "any": [["5 hours"], ["to 5"], ["2.5 to 5"]]},
+    {"id": "non-latin-subject", "any": [["license-plate"], ["license plate"], ["non-latin"]]},
+    {"id": "non-latin-unverified", "anchors": ["non-latin"], "any": [["unverified"]]}
+  ]
+}

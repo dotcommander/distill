@@ -1,0 +1,2 @@
+## On-Device Models
+Halcyon runs three models concurrently. The first is a person-detection model based on YOLOv8n running at 30 frames per second. The second is a license-plate recognition model, which is limited to 12 frames per second. The third is an audio gunshot-classifier that samples at 16 kHz. All three models share a single 8 GB LPDDR4 memory pool.

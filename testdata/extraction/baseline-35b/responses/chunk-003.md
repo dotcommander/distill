@@ -1,0 +1,9 @@
+- Camera uses a 12-megapixel Sony IMX678 sensor
+- Sensor has a 1/1.8-inch optical format
+- Onboard compute is provided by a Hailo-8 accelerator rated at 26 TOPS
+- Device draws 5.4 watts at idle
+- Device draws 9.1 watts under full inference load
+- Local storage is a 256 GB industrial microSD card
+- Storage card is rated for 3000 write cycles
+- Enclosure is IP66-rated
+- Specified operating temperature range is between -30°C and 55°C

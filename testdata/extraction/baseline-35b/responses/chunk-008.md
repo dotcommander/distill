@@ -1,0 +1,5 @@
+- Marketing claims Halcyon is "3x faster" than the competing Verkada CB52.
+- Internal benchmark memo records a 1.8x speedup for Halcyon versus Verkada CB52.
+- A reseller reported Halcyon's IP rating as IP67.
+- Official specification lists Halcyon's IP rating as IP66.
+- The discrepancy between the reported IP67 and official IP66 rating is unresolved.

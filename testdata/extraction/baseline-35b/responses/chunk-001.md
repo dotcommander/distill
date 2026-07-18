@@ -1,0 +1,3 @@
+- The document is titled "Project Halcyon — Internal Product Brief".
+- The document is an internal product brief.
+- The project referenced is named "Project Halcyon".

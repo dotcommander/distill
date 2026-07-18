@@ -1,0 +1,15 @@
+{
+  "chunk": "chunk-008",
+  "facts": [
+    {"id": "marketing-source", "any": [["marketing"]]},
+    {"id": "marketing-claim", "any": [["3x"], ["3 times"], ["three times"]]},
+    {"id": "competitor-brand", "any": [["verkada"]]},
+    {"id": "competitor-model", "any": [["cb52"], ["cb 52"], ["cb-52"]]},
+    {"id": "memo-source", "any": [["benchmark memo"], ["internal benchmark"], ["memo"]]},
+    {"id": "memo-speedup", "any": [["1.8x"], ["1.8"]]},
+    {"id": "reseller-source", "any": [["reseller"]]},
+    {"id": "reseller-ip", "anchors": ["ip67"]},
+    {"id": "official-ip", "anchors": ["ip66"]},
+    {"id": "ip-discrepancy", "any": [["unresolved"], ["contradict"], ["discrepancy"]]}
+  ]
+}

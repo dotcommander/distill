@@ -1,0 +1,42 @@
+{
+  "task": "sentiment",
+  "allowed_labels": ["positive", "negative", "neutral"],
+  "cost_per_mtok": {
+    "z-ai/glm-5.2": 1.505,
+    "deepseek/deepseek-v4-pro": 0.544,
+    "openai/gpt-5.5": 11.25,
+    "anthropic/claude-opus-4.8": 10.0,
+    "qwen/qwen3.6-35b-a3b": 0.355,
+    "google/gemini-2.5-flash-lite-preview-09-2025": 0.175,
+    "xiaomi/mimo-v2.5": 0.175,
+    "bytedance-seed/seed-2.0-mini": 0.175,
+    "openai/gpt-5-nano": 0.1375,
+    "moonshotai/kimi-k2.6": 1.3475,
+    "google/gemma-4-31b-it": 0.1775,
+    "z-ai/glm-4.7-flash": 0.145,
+    "amazon/nova-lite-v1": 0.105
+  },
+  "items": [
+    {"id": "p1", "text": "I absolutely love this product, it exceeded every expectation.", "gold_label": "positive"},
+    {"id": "p2", "text": "Best purchase I've made all year — worth every penny.", "gold_label": "positive"},
+    {"id": "p3", "text": "The team went above and beyond; I couldn't be happier.", "gold_label": "positive"},
+    {"id": "p4", "text": "Finally a tool that just works. Delighted.", "gold_label": "positive"},
+    {"id": "p5", "text": "Service was prompt, friendly, and the food was incredible.", "gold_label": "positive"},
+    {"id": "p6", "text": "This update fixed all my issues and added features I didn't know I needed.", "gold_label": "positive"},
+    {"id": "p7", "text": "Not bad at all, actually better than I expected.", "gold_label": "positive"},
+    {"id": "n1", "text": "This was a complete waste of money and broke on day one.", "gold_label": "negative"},
+    {"id": "n2", "text": "Customer support ignored me for three weeks. Appalling.", "gold_label": "negative"},
+    {"id": "n3", "text": "The app crashes constantly and lost all my data.", "gold_label": "negative"},
+    {"id": "n4", "text": "Overpriced, underwhelming, and the build quality is cheap.", "gold_label": "negative"},
+    {"id": "n5", "text": "I regret this purchase and would not recommend it to anyone.", "gold_label": "negative"},
+    {"id": "n6", "text": "The worst hotel experience of my life — filthy rooms and rude staff.", "gold_label": "negative"},
+    {"id": "n7", "text": "Oh great, another update that breaks everything. Just what I needed.", "gold_label": "negative"},
+    {"id": "n8", "text": "The screen is gorgeous, but the battery life is an absolute dealbreaker.", "gold_label": "negative"},
+    {"id": "u1", "text": "The package arrived on Tuesday as scheduled.", "gold_label": "neutral"},
+    {"id": "u2", "text": "The device measures 6 by 3 inches and weighs 200 grams.", "gold_label": "neutral"},
+    {"id": "u3", "text": "I bought this last month to replace my old one.", "gold_label": "neutral"},
+    {"id": "u4", "text": "The meeting has been rescheduled to 3pm on Thursday.", "gold_label": "neutral"},
+    {"id": "u5", "text": "It comes in three colors: black, white, and blue.", "gold_label": "neutral"},
+    {"id": "u6", "text": "The report covers fiscal years 2023 through 2025.", "gold_label": "neutral"}
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "tensions": [
+    {"id": "speedup-claim-vs-memo", "both": [["3x"], ["1.8x"]]},
+    {"id": "ip-rating-discrepancy", "both": [["ip67"], ["ip66"]]},
+    {"id": "overheat-root-cause-open", "both": [["60"], ["root cause", "not confirmed", "unconfirmed", "unresolved"]]}
+  ],
+  "hygiene": {
+    "preamble": ["here is", "here's", "sure,", "below is", "as an ai", "i cannot", "i'm sorry", "i am sorry", "certainly,", "of course,"],
+    "artifacts": ["chunk-00", "more lines]", "```", "<chunk", "[end of"]
+  },
+  "wordBand": {"min": 350, "max": 1400},
+  "fabrications": ["fourth milestone", "dual-bus", "no separate audio", "dozens of prototypes", "final quarter of 2025"],
+  "gate": {"minRecall": 0.88, "maxOverlap": 0.06, "minTensions": 2, "requireWordBand": false, "requireClean": true, "maxFabrications": 1, "excludeModels": ["sonar", "search", "qwen3.7-plus"]}
+}

@@ -1,0 +1,10 @@
+{
+  "style": "Mitch Hedberg / Jimmy Carr — tight one-liners, absurdist observations, dark or witty punchlines. No setups longer than the joke.",
+  "topics": [
+    {"id": "airports", "brief": "Air travel and airports."},
+    {"id": "diet", "brief": "Dieting and healthy eating."},
+    {"id": "tech", "brief": "Smartphones and modern technology."},
+    {"id": "pets", "brief": "Pets and the people who own them."},
+    {"id": "mondays", "brief": "Work, Mondays, and office life."}
+  ]
+}

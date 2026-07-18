@@ -1,0 +1,2649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>
+/* theme.js — pre-paint theme resolver + toggle-button wiring, no dependencies */
+
+(function () {
+  "use strict";
+
+  var THEME_KEY = "html-theme";
+  var PALETTE_KEY = "html-palette";
+  var PALETTES = ["sepia", "blue", "green", "rose", "catppuccin"];
+  var root = document.documentElement;
+
+  function isPalette(value) {
+    return PALETTES.indexOf(value) !== -1;
+  }
+
+  function resolveTheme() {
+    try {
+      var s = localStorage.getItem(THEME_KEY);
+      if (s === "light" || s === "dark") return s;
+    } catch (e) {}
+    // Optional config default (window.HTML_DEFAULT_THEME) takes precedence over
+    // the system preference, but never over an explicit saved choice above.
+    var d = window.HTML_DEFAULT_THEME;
+    if (d === "light" || d === "dark") return d;
+    return matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  }
+
+  function resolvePalette() {
+    try {
+      var s = localStorage.getItem(PALETTE_KEY);
+      if (isPalette(s)) return s;
+    } catch (e) {}
+    var d = window.HTML_DEFAULT_PALETTE;
+    if (isPalette(d)) return d;
+    return "sepia";
+  }
+
+  function applyTheme(t) {
+    root.dataset.theme = t;
+  }
+
+  function applyPalette(p) {
+    root.dataset.palette = isPalette(p) ? p : "sepia";
+  }
+
+  // Runs synchronously during <head> parse — sets data-theme before first paint.
+  applyTheme(resolveTheme());
+  applyPalette(resolvePalette());
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var btn = document.getElementById("theme-toggle");
+    var paletteButtons = document.querySelectorAll("[data-palette-choice]");
+
+    function sync() {
+      if (btn) {
+        var dark = root.dataset.theme === "dark";
+        btn.setAttribute("aria-pressed", String(dark));
+        btn.textContent = dark ? "☀" : "☾"; // ☀ / ☾
+        btn.title = dark ? "Switch to light theme" : "Switch to dark theme";
+      }
+      paletteButtons.forEach(function (paletteButton) {
+        var selected = paletteButton.dataset.paletteChoice === root.dataset.palette;
+        paletteButton.setAttribute("aria-pressed", String(selected));
+      });
+    }
+
+    sync();
+
+    if (btn) btn.addEventListener("click", function () {
+      var next = root.dataset.theme === "dark" ? "light" : "dark";
+      applyTheme(next);
+      try {
+        localStorage.setItem(THEME_KEY, next);
+      } catch (e) {}
+      sync();
+    });
+
+    paletteButtons.forEach(function (paletteButton) {
+      paletteButton.addEventListener("click", function () {
+        var next = paletteButton.dataset.paletteChoice;
+        applyPalette(next);
+        try {
+          localStorage.setItem(PALETTE_KEY, root.dataset.palette);
+        } catch (e) {}
+        sync();
+      });
+    });
+  });
+})();
+
+  </script>
+  <title>distill — Remote-Eval-Primary Model Selection</title>
+  <style>
+/* base.css — quiet offline reader, light + dark, no external dependencies */
+
+/* ── Color tokens ─────────────────────────────────────────────────────────── */
+/* Light palette on :root; dark palette ONLY under [data-theme="dark"].
+   System preference is resolved by theme.js (sets data-theme before paint) —
+   no @media (prefers-color-scheme) here, so the palette is defined exactly once. */
+:root {
+  color-scheme: light;
+  --bg:       #f7f5ef;
+  --paper:    #fffdf8;
+  --text:     #27231f;
+  --muted:    #6f685f;
+  --link:     #0b5cad;
+  --border:   #ddd6c9;
+  --rule:     #c8bba8;
+  --code-bg:  #f0ece4;
+  --panel-bg: #f8f3ea;
+  --accent:   #9f5b2d;
+  --success:  #24764b;
+  --shadow:   0 1.5rem 4rem rgba(48, 39, 27, 0.08);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:       #11100e;
+  --paper:    #181613;
+  --text:     #eee8dd;
+  --muted:    #afa69a;
+  --link:     #7eb6ff;
+  --border:   #38332b;
+  --rule:     #5a4b38;
+  --code-bg:  #211e19;
+  --panel-bg: #1e1a15;
+  --accent:   #e0a05f;
+  --success:  #62c08a;
+  --shadow:   0 1.5rem 4rem rgba(0, 0, 0, 0.34);
+}
+
+:root[data-palette="blue"] {
+  --bg:       #f3f7fb;
+  --paper:    #fcfdff;
+  --text:     #18212f;
+  --muted:    #5f6e82;
+  --link:     #155ca8;
+  --border:   #d3deeb;
+  --rule:     #adc2dc;
+  --code-bg:  #eaf1f8;
+  --panel-bg: #eef5fb;
+  --accent:   #2563eb;
+  --success:  #16835a;
+  --shadow:   0 1.5rem 4rem rgba(28, 64, 112, 0.09);
+}
+
+:root[data-theme="dark"][data-palette="blue"] {
+  --bg:       #0b111b;
+  --paper:    #101827;
+  --text:     #e8eef8;
+  --muted:    #a5b3c8;
+  --link:     #8fc0ff;
+  --border:   #27364c;
+  --rule:     #365478;
+  --code-bg:  #141e2d;
+  --panel-bg: #182235;
+  --accent:   #6da8ff;
+  --success:  #6fd0a3;
+  --shadow:   0 1.5rem 4rem rgba(0, 0, 0, 0.36);
+}
+
+:root[data-palette="green"] {
+  --bg:       #f3f8f3;
+  --paper:    #fcfefb;
+  --text:     #1d281f;
+  --muted:    #63715f;
+  --link:     #1e6b4d;
+  --border:   #d5e1d1;
+  --rule:     #adc4a7;
+  --code-bg:  #ebf3e8;
+  --panel-bg: #eff7ec;
+  --accent:   #2d7a46;
+  --success:  #1b7c52;
+  --shadow:   0 1.5rem 4rem rgba(40, 85, 48, 0.08);
+}
+
+:root[data-theme="dark"][data-palette="green"] {
+  --bg:       #0d130e;
+  --paper:    #121a14;
+  --text:     #e8f1e4;
+  --muted:    #a9b8a5;
+  --link:     #8fd6b4;
+  --border:   #29372a;
+  --rule:     #3d593f;
+  --code-bg:  #172117;
+  --panel-bg: #1a261b;
+  --accent:   #79c48a;
+  --success:  #74d3a3;
+  --shadow:   0 1.5rem 4rem rgba(0, 0, 0, 0.34);
+}
+
+:root[data-palette="rose"] {
+  --bg:       #fbf5f7;
+  --paper:    #fffdfd;
+  --text:     #2b1e25;
+  --muted:    #755f68;
+  --link:     #9d3762;
+  --border:   #e6d3dc;
+  --rule:     #cfaebe;
+  --code-bg:  #f6edf1;
+  --panel-bg: #fbf1f5;
+  --accent:   #be4b75;
+  --success:  #24764b;
+  --shadow:   0 1.5rem 4rem rgba(104, 42, 68, 0.08);
+}
+
+:root[data-theme="dark"][data-palette="rose"] {
+  --bg:       #160f13;
+  --paper:    #1e151a;
+  --text:     #f3e7ec;
+  --muted:    #bea7b0;
+  --link:     #ffa7c7;
+  --border:   #3e2b34;
+  --rule:     #634253;
+  --code-bg:  #261a20;
+  --panel-bg: #2a1d23;
+  --accent:   #f08ab2;
+  --success:  #75d19d;
+  --shadow:   0 1.5rem 4rem rgba(0, 0, 0, 0.36);
+}
+
+:root[data-palette="catppuccin"] {
+  --bg:       #eff1f5;
+  --paper:    #f9fafc;
+  --text:     #4c4f69;
+  --muted:    #6c6f85;
+  --link:     #1e66f5;
+  --border:   #ccd0da;
+  --rule:     #bcc0cc;
+  --code-bg:  #e6e9ef;
+  --panel-bg: #eff1f5;
+  --accent:   #8839ef;
+  --success:  #40a02b;
+  --shadow:   0 1.5rem 4rem rgba(76, 79, 105, 0.10);
+}
+
+:root[data-theme="dark"][data-palette="catppuccin"] {
+  --bg:       #1e1e2e;
+  --paper:    #242438;
+  --text:     #cdd6f4;
+  --muted:    #a6adc8;
+  --link:     #89b4fa;
+  --border:   #45475a;
+  --rule:     #585b70;
+  --code-bg:  #181825;
+  --panel-bg: #313244;
+  --accent:   #cba6f7;
+  --success:  #a6e3a1;
+  --shadow:   0 1.5rem 4rem rgba(0, 0, 0, 0.36);
+}
+
+/* ── Reset / base ─────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  font-size: 1.125rem;
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--rule) 10%, transparent), transparent),
+    repeating-linear-gradient(0deg, transparent 0, transparent 31px, color-mix(in srgb, var(--rule) 7%, transparent) 32px);
+  opacity: 0.38;
+}
+
+::selection {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* ── Content container ────────────────────────────────────────────────────── */
+.markdown-body {
+  box-sizing: border-box;
+  width: min(calc(100% - 2rem), 46rem);
+  max-width: 46rem;
+  margin: clamp(2rem, 6vw, 4.5rem) auto;
+  padding: clamp(1.5rem, 4vw, 3.75rem);
+  background: var(--paper);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  font-size: 1.125rem;
+  line-height: 1.6;
+  /* Wrap long URLs / unbreakable words instead of widening the page. */
+  overflow-wrap: break-word;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── Headings ─────────────────────────────────────────────────────────────── */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-weight: 700;
+  margin-top: 2em;
+  margin-bottom: 0.55em;
+  line-height: 1.25;
+  scroll-margin-top: 80px;
+}
+
+.markdown-body h1 {
+  font-size: clamp(2rem, 9vw, 2.65rem);
+  letter-spacing: 0;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 0.35em;
+}
+
+.markdown-body h2 {
+  font-size: 1.5em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+
+.markdown-body h3 { font-size: 1.25em; }
+.markdown-body h4 { font-size: 1.05em; }
+.markdown-body h5 { font-size: 0.95em; }
+.markdown-body h6 { font-size: 0.9em;  color: var(--muted); }
+
+.markdown-body h2::before {
+  content: "";
+  display: block;
+  width: 2.2rem;
+  height: 3px;
+  margin-bottom: 0.45em;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+/* ── Heading anchors ──────────────────────────────────────────────────────── */
+/* A '#' link appended to each heading by headings.js, revealed on hover/focus. */
+.markdown-body :is(h1, h2, h3, h4, h5, h6) .heading-anchor {
+  margin-left: 0.35em;
+  font-weight: 400;
+  color: var(--muted);
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.markdown-body :is(h1, h2, h3, h4, h5, h6):hover .heading-anchor,
+.heading-anchor:focus-visible {
+  opacity: 1;
+}
+
+.heading-anchor:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+/* Coarse / touch pointers have no hover — keep anchors faintly visible. */
+@media (hover: none), (pointer: coarse) {
+  .markdown-body .heading-anchor {
+    opacity: 0.5;
+  }
+}
+
+/* ── Table of contents ────────────────────────────────────────────────────── */
+/* Rendered by buildTOC only for longer documents (>= 4 h2/h3 entries). */
+.toc {
+  margin: 0 0 2.25em;
+  padding: 0.9em 1em;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.95em;
+}
+
+.toc::before {
+  content: "Contents";
+  display: block;
+  margin-bottom: 0.45em;
+  color: var(--muted);
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.toc ul {
+  margin: 0;
+  padding-left: 1.25em;
+  list-style: none;
+}
+
+.toc li {
+  margin: 0.15em 0;
+}
+
+.toc-h3 {
+  padding-left: 1em;
+}
+
+.toc a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.toc a:hover {
+  text-decoration: underline;
+}
+
+.toc a:focus-visible,
+.markdown-body a:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Report components ───────────────────────────────────────────────────── */
+.report-section {
+  margin: 1.75rem 0;
+}
+
+.report-summary {
+  margin: 0 0 1.5rem;
+  padding: 1rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.94rem;
+}
+
+.report-summary dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.report-summary dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.report-summary dd {
+  margin: 0.15rem 0 0;
+  font-weight: 700;
+}
+
+.report-summary p {
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+}
+
+.report-table-wrap {
+  overflow-x: auto;
+}
+
+.report-filter {
+  width: 100%;
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  color: var(--text);
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: 0.95rem ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.report-mobile-sort {
+  display: none;
+}
+
+.report-mobile-sort select {
+  width: 100%;
+  min-height: 2.35rem;
+  margin: 0.45rem 0 0;
+  padding: 0.45rem 0.65rem;
+  color: var(--text);
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: 0.9rem ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.report-mobile-sort select:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+.report-filter-status {
+  margin: 0.35rem 0 0.75rem;
+  color: var(--muted);
+  font: 0.78rem ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.9rem;
+}
+
+.report-table th,
+.report-table td {
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.report-table th {
+  background: var(--panel-bg);
+}
+
+.report-table th button {
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.report-table th[aria-sort] button::after {
+  display: inline-block;
+  min-width: 1em;
+  margin-left: 0.35em;
+  color: var(--accent);
+}
+
+.report-table th[aria-sort="ascending"] button::after {
+  content: "▲";
+}
+
+.report-table th[aria-sort="descending"] button::after {
+  content: "▼";
+}
+
+.report-empty-row td {
+  padding: 1.2rem;
+  color: var(--muted);
+  text-align: center;
+  background: color-mix(in srgb, var(--panel-bg) 70%, var(--paper));
+}
+
+.record-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: 0.8rem;
+}
+
+.record-cards-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.82rem;
+}
+
+.record-cards-overview div {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.7rem;
+  padding: 0.22rem 0.55rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.record-cards-overview dt,
+.record-cards-overview dd {
+  margin: 0;
+}
+
+.record-cards-overview dt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.record-cards-overview dd {
+  color: var(--muted);
+}
+
+.record-empty {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  color: var(--muted);
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: 0.92rem ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.record-card {
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+}
+
+.record-card h3 {
+  margin-top: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.record-card dl,
+.record-card div {
+  margin: 0;
+}
+
+.record-card div {
+  padding: 0.35rem 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.record-card dt {
+  color: var(--muted);
+  font: 700 0.72rem ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-transform: uppercase;
+}
+
+.record-card dd {
+  margin: 0.1rem 0 0;
+}
+
+.diff-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.65rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.8rem;
+}
+
+.diff-summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 1.65rem;
+  padding: 0.2rem 0.55rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.diff-summary strong {
+  color: var(--text);
+}
+
+.diff-summary .diff-added strong { color: var(--success); }
+.diff-summary .diff-removed strong { color: #b42318; }
+
+.diff-view {
+  padding: 0.65rem 0;
+}
+
+.diff-view span {
+  display: block;
+  min-width: max-content;
+  padding: 0 1rem;
+}
+
+.diff-view .add {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 9%, transparent);
+}
+
+.diff-view .del {
+  color: #b42318;
+  background: color-mix(in srgb, #b42318 8%, transparent);
+}
+
+.diff-view .hunk,
+.diff-view .file {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.diff-view .hunk {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+:root[data-theme="dark"] .diff-view .del { color: #ff9b91; }
+:root[data-theme="dark"] .diff-summary .diff-removed strong { color: #ff9b91; }
+
+.json-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.82rem;
+}
+
+.json-overview div,
+.json-overview span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.7rem;
+  padding: 0.22rem 0.55rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.json-overview dt,
+.json-overview dd {
+  margin: 0;
+}
+
+.json-overview dt,
+.json-overview strong {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.json-overview dd {
+  color: var(--muted);
+}
+
+.markdown-body pre.json-source {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: visible;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.markdown-body pre.json-source code {
+  white-space: inherit;
+  overflow-wrap: inherit;
+}
+
+.code-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.82rem;
+}
+
+.code-overview div {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.7rem;
+  padding: 0.22rem 0.55rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.code-overview dt,
+.code-overview dd {
+  margin: 0;
+}
+
+.code-overview dt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.code-overview dd {
+  color: var(--muted);
+}
+
+.article-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 1rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.82rem;
+}
+
+.article-overview div {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.7rem;
+  padding: 0.22rem 0.55rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.article-overview dt,
+.article-overview dd {
+  margin: 0;
+}
+
+.article-overview dt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.article-overview dd {
+  color: var(--muted);
+}
+
+.text-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.82rem;
+}
+
+.text-overview div {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.7rem;
+  padding: 0.22rem 0.55rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.text-overview dt,
+.text-overview dd {
+  margin: 0;
+}
+
+.text-overview dt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.text-overview dd {
+  color: var(--muted);
+}
+
+.binary-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.82rem;
+}
+
+.binary-overview div {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.7rem;
+  padding: 0.22rem 0.55rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.binary-overview dt,
+.binary-overview dd {
+  margin: 0;
+}
+
+.binary-overview dt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.binary-overview dd {
+  color: var(--muted);
+}
+
+.binary-preview {
+  max-width: 100%;
+  overflow-x: auto;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.transcript-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.82rem;
+}
+
+.transcript-overview div {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.7rem;
+  padding: 0.22rem 0.55rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.transcript-overview dt,
+.transcript-overview dd {
+  margin: 0;
+}
+
+.transcript-overview dt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.transcript-overview dd {
+  color: var(--muted);
+}
+
+.log-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.82rem;
+}
+
+.log-overview div {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.7rem;
+  padding: 0.22rem 0.55rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.log-overview dt,
+.log-overview dd {
+  margin: 0;
+}
+
+.log-overview dt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.log-overview dd {
+  color: var(--muted);
+}
+
+.markdown-body pre.report-text {
+  overflow-x: visible;
+}
+
+.markdown-body pre.report-text code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body pre.chroma code,
+.markdown-body pre.chroma .line,
+.markdown-body pre.chroma .cl {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.file-tree-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.82rem;
+}
+
+.file-tree-overview div {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.7rem;
+  padding: 0.22rem 0.55rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.file-tree-overview dt,
+.file-tree-overview dd {
+  margin: 0;
+}
+
+.file-tree-overview dt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.file-tree-overview dd {
+  color: var(--muted);
+}
+
+.file-tree {
+  display: grid;
+  gap: 0.12rem;
+  padding-left: 0;
+  list-style: none;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92rem;
+}
+
+.file-tree li {
+  position: relative;
+  min-height: 1.65rem;
+  margin: 0;
+  padding: 0.18rem 0.35rem 0.18rem calc(var(--depth, 0) * 1.15rem + 1.35rem);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+
+.file-tree li::before {
+  content: "";
+  position: absolute;
+  top: 0.85rem;
+  left: calc(var(--depth, 0) * 1.15rem + 0.3rem);
+  width: 0.65rem;
+  height: 1px;
+  background: color-mix(in srgb, var(--border) 82%, transparent);
+}
+
+.file-tree li::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--depth, 0) * 1.15rem + 0.3rem);
+  width: 1px;
+  background: color-mix(in srgb, var(--border) 62%, transparent);
+}
+
+.file-tree span {
+  position: relative;
+  z-index: 1;
+  display: inline;
+}
+
+.file-tree li:hover {
+  background: color-mix(in srgb, var(--panel-bg) 72%, transparent);
+}
+
+.log-lines {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.84rem;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+  padding: 0.38rem 0.55rem;
+  background: color-mix(in srgb, var(--panel-bg) 62%, var(--paper));
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 6px;
+}
+
+.log-line:not([class*=" log-"]) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.log-level {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.35rem;
+  padding: 0 0.38rem;
+  color: var(--text);
+  background: color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: 4px;
+  font: 700 0.68rem ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.log-message {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.log-debug .log-level { color: var(--muted); }
+.log-info .log-level { color: var(--link); }
+.log-warn .log-level { color: #9a5b00; background: color-mix(in srgb, #f2b84b 22%, var(--panel-bg)); }
+.log-error .log-level,
+.log-fatal .log-level { color: #b42318; background: color-mix(in srgb, #ff9b91 22%, var(--panel-bg)); }
+
+:root[data-theme="dark"] .log-warn .log-level { color: #ffd27a; }
+:root[data-theme="dark"] .log-error .log-level,
+:root[data-theme="dark"] .log-fatal .log-level { color: #ff9b91; }
+
+.transcript-turns {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.transcript-turn {
+  display: grid;
+  grid-template-columns: minmax(6rem, 10rem) minmax(0, 1fr);
+  gap: 0.85rem;
+  padding: 0.85rem;
+  background: color-mix(in srgb, var(--panel-bg) 78%, var(--paper));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.transcript-speaker {
+  color: var(--accent);
+  font: 700 0.78rem ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow-wrap: anywhere;
+}
+
+.transcript-text {
+  min-width: 0;
+}
+
+.transcript-text p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.transcript-text p + p {
+  margin-top: 0.45rem;
+}
+
+.report-tab-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.report-tab-list button {
+  min-width: 6.5rem;
+  max-width: min(16rem, 100%);
+  min-height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.45rem 0.65rem;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  font: 700 0.9rem ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  cursor: pointer;
+}
+
+.report-tab-list button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-tab-list button[aria-selected="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.report-tab-list button:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.report-slides {
+  display: grid;
+  gap: 1rem;
+}
+
+.report-slide {
+  min-height: min(42rem, calc(100vh - 9rem));
+  padding: clamp(1.25rem, 4vw, 2.25rem);
+  background: color-mix(in srgb, var(--panel-bg) 72%, var(--paper));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  scroll-snap-align: start;
+}
+
+.report-slide > .report-section,
+.report-slide > .report-summary {
+  margin: 0;
+}
+
+.report-slide-count {
+  margin-bottom: 0.85rem;
+  color: var(--muted);
+  font: 700 0.72rem ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-transform: uppercase;
+}
+
+.report-slide-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+  font: 700 0.82rem ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.report-slide-controls button {
+  width: 2rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  color: var(--text);
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.report-slide-controls button span {
+  display: block;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.report-slide-controls button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.report-slide-controls button:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+.report-slide-controls [data-slide-status] {
+  min-width: 3.5rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* JS slideshow mode: report.js sets [hidden] on every slide but the current
+   one. Without JS no slide is hidden, so the deck stays a scrollable stack —
+   progressive enhancement. */
+.report-slide[hidden] {
+  display: none;
+}
+
+@media (min-height: 40rem) {
+  .report-slides {
+    scroll-snap-type: y proximity;
+  }
+}
+
+/* ── Links ────────────────────────────────────────────────────────────────── */
+.markdown-body a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+/* ── Paragraphs ───────────────────────────────────────────────────────────── */
+.markdown-body p {
+  margin-top: 0;
+  margin-bottom: 1em;
+}
+
+.markdown-body strong {
+  color: color-mix(in srgb, var(--text) 92%, var(--accent));
+}
+
+/* ── Lists ────────────────────────────────────────────────────────────────── */
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 2em;
+  margin-top: 0;
+  margin-bottom: 1em;
+}
+
+.markdown-body li {
+  margin-bottom: 0.25em;
+}
+
+.markdown-body li > ul,
+.markdown-body li > ol {
+  margin-top: 0.25em;
+  margin-bottom: 0;
+}
+
+/* ── Inline code ──────────────────────────────────────────────────────────── */
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.88em;
+  background: var(--code-bg);
+  padding: 0.2em 0.45em;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 6px;
+  /* Wrap long inline tokens rather than forcing page-width overflow. */
+  overflow-wrap: break-word;
+}
+
+/* ── Code blocks ──────────────────────────────────────────────────────────── */
+/* pre MUST be position:relative so .copy-btn can absolute-position top-right */
+.markdown-body pre {
+  position: relative;
+  background: var(--code-bg);
+  padding: 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.5;
+  margin-top: 0;
+  margin-bottom: 1.4em;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 50%, transparent);
+}
+
+/* Reset inline-code styles inside a block — chroma wraps code here */
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  white-space: pre;
+}
+
+/* ── Copy button ──────────────────────────────────────────────────────────── */
+.copy-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  min-width: 4.25rem;
+  min-height: 1.8rem;
+  padding: 0.2rem 0.55rem;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.78rem;
+  color: var(--muted);
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+  user-select: none;
+  line-height: 1.5;
+}
+
+.markdown-body pre:hover .copy-btn,
+.copy-btn:focus {
+  opacity: 1;
+}
+
+.copy-btn.copied {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+/* Keyboard focus must be clearly visible (a11y). */
+.copy-btn:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+  opacity: 1;
+}
+
+/* Touch / coarse pointers have no hover — keep copy buttons discoverable. */
+@media (hover: none), (pointer: coarse) {
+  .copy-btn {
+    opacity: 1;
+  }
+}
+
+/* ── Theme toggle button ──────────────────────────────────────────────────── */
+.theme-controls {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 0.24rem;
+  padding: 0.28rem;
+  min-width: max-content;
+  background: color-mix(in srgb, var(--paper) 92%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 0.6rem 1.5rem rgba(0, 0, 0, 0.09);
+  backdrop-filter: blur(10px);
+}
+
+.theme-toggle,
+.palette-button {
+  width: 1.62rem;
+  height: 1.62rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  box-sizing: border-box;
+  background: var(--paper);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.theme-toggle {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--text);
+  border-radius: 5px;
+  opacity: 0.82;
+  transition: opacity 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  user-select: none;
+}
+
+.palette-switcher {
+  display: contents;
+}
+
+.palette-button {
+  border-radius: 5px;
+}
+
+.palette-button::before {
+  content: "";
+  width: 0.82rem;
+  height: 0.82rem;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.palette-button[data-palette-choice="sepia"]::before { background: #9f5b2d; }
+.palette-button[data-palette-choice="blue"]::before { background: #2563eb; }
+.palette-button[data-palette-choice="green"]::before { background: #2d7a46; }
+.palette-button[data-palette-choice="rose"]::before { background: #be4b75; }
+.palette-button[data-palette-choice="catppuccin"]::before { background: #cba6f7; }
+
+.palette-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.theme-toggle:hover,
+.theme-toggle:focus,
+.palette-button:hover,
+.palette-button:focus {
+  opacity: 1;
+}
+
+.theme-toggle:focus-visible,
+.palette-button:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+  opacity: 1;
+}
+
+
+/* ── Tables ───────────────────────────────────────────────────────────────── */
+.markdown-body table:not(.report-table) {
+  border-collapse: collapse;
+  width: max-content;
+  max-width: 100%;
+  margin-bottom: 1.4em;
+  font-size: 0.95em;
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.markdown-body table:not(.report-table) th,
+.markdown-body table:not(.report-table) td {
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-body table:not(.report-table) thead th {
+  background: var(--panel-bg);
+  font-weight: 600;
+  color: color-mix(in srgb, var(--text) 85%, var(--accent));
+}
+
+.markdown-body table:not(.report-table) tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--code-bg) 60%, transparent);
+}
+
+/* Narrow viewports: wide tables scroll horizontally instead of forcing the
+   whole page wider than the screen. */
+@media (max-width: 45rem) {
+  .markdown-body {
+    width: 100%;
+    margin: 0;
+    padding: 1.25rem;
+    border-left: 0;
+    border-right: 0;
+    border-radius: 0;
+  }
+
+  .markdown-body h1 {
+    font-size: clamp(1.85rem, 8vw, 2.2rem);
+  }
+
+  .markdown-body table:not(.report-table) {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .report-table-wrap {
+    overflow-x: visible;
+  }
+
+  .report-table {
+    display: block;
+  }
+
+  .report-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .report-mobile-sort {
+    display: block;
+  }
+
+  .report-table tbody,
+  .report-table tr,
+  .report-table td {
+    display: block;
+  }
+
+  .report-table tbody {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .report-table tr {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--paper);
+    overflow: hidden;
+  }
+
+  .report-table tr[hidden] {
+    display: none;
+  }
+
+  .report-table td {
+    border: 0;
+    border-top: 1px solid var(--border);
+    overflow-wrap: anywhere;
+  }
+
+  .report-table td:first-child {
+    border-top: 0;
+  }
+
+  .report-table td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 0.15rem;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .report-slide {
+    display: block;
+    min-height: auto;
+    padding: 1rem;
+    border-radius: 8px;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .report-slide-controls {
+    justify-content: center;
+    padding: 0.4rem;
+    background: color-mix(in srgb, var(--paper) 92%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  .log-line {
+    grid-template-columns: 3.75rem minmax(0, 1fr);
+    gap: 0.45rem;
+    padding: 0.45rem;
+  }
+
+  .transcript-turn {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+  }
+}
+
+/* ── Blockquotes ──────────────────────────────────────────────────────────── */
+.markdown-body blockquote {
+  margin-left: 0;
+  margin-right: 0;
+  padding: 0.1em 0 0.1em 1em;
+  border-left: 4px solid var(--accent);
+  color: color-mix(in srgb, var(--text) 68%, var(--muted));
+}
+
+.markdown-body blockquote > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── Images ───────────────────────────────────────────────────────────────── */
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* ── Horizontal rule ──────────────────────────────────────────────────────── */
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 2em 0;
+}
+
+/* ── Task lists ───────────────────────────────────────────────────────────── */
+.markdown-body .task-list-item,
+.markdown-body li:has(> input[type="checkbox"]) {
+  list-style: none;
+}
+
+.markdown-body .task-list-item input[type="checkbox"],
+.markdown-body li > input[type="checkbox"] {
+  accent-color: var(--accent);
+  margin-right: 0.5em;
+  vertical-align: middle;
+}
+
+.markdown-body kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0.1em 0.35em;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.78em;
+  line-height: 1.4;
+  text-align: center;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+}
+
+.markdown-body mark {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 4px;
+  padding: 0 0.18em;
+}
+
+@media (max-width: 48rem) {
+  .markdown-body {
+    margin: 0;
+    padding: 4.4rem 1.25rem 1.25rem;
+    border-width: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .theme-controls {
+    top: 0.75rem;
+    right: 0.75rem;
+    gap: 0.2rem;
+    padding: 0.24rem;
+  }
+
+  .theme-toggle,
+  .palette-button {
+    width: 1.48rem;
+    height: 1.48rem;
+  }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .copy-btn,
+  .theme-toggle,
+  .palette-button,
+  .heading-anchor {
+    transition: none;
+  }
+}
+
+/* ── Print ────────────────────────────────────────────────────────────────── */
+@media print {
+  :root[data-theme="dark"] {
+    --bg:       #f7f5ef;
+    --paper:    #fffdf8;
+    --text:     #27231f;
+    --muted:    #6f685f;
+    --link:     #0b5cad;
+    --border:   #ddd6c9;
+    --rule:     #c8bba8;
+    --code-bg:  #f0ece4;
+    --panel-bg: #f8f3ea;
+    --accent:   #9f5b2d;
+    --success:  #24764b;
+    --shadow:   0 1.5rem 4rem rgba(48, 39, 27, 0.08);
+  }
+
+  body { background: var(--bg); color: var(--text); }
+
+  .theme-controls,
+  .copy-btn {
+    display: none !important;
+  }
+
+  .markdown-body {
+    max-width: none;
+  }
+
+  pre,
+  blockquote,
+  table,
+  img {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  @page {
+    margin: 1.5cm;
+  }
+}
+
+.review-cards {
+  display: grid;
+  gap: 1rem;
+}
+.review-card {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+.review-card h3 {
+  margin-top: 0;
+  overflow-wrap: anywhere;
+}
+.review-comment {
+  display: block;
+  width: 100%;
+  min-height: 4rem;
+  margin-top: 0.5rem;
+  box-sizing: border-box;
+  font: inherit;
+  resize: vertical;
+}
+.review-copy {
+  margin-bottom: 1rem;
+}
+
+/* Background */ .bg.light { background-color: #f7f7f7; }
+/* PreWrapper */ .chroma.light { background-color: #f7f7f7; -webkit-text-size-adjust: none; }
+/* Error */ .chroma.light .err { color: #f6f8fa; background-color: #82071e }
+/* LineLink */ .chroma.light .lnlinks { outline: none; text-decoration: none; color: inherit }
+/* LineTableTD */ .chroma.light .lntd { vertical-align: top; padding: 0; margin: 0; border: 0; }
+/* LineTable */ .chroma.light .lntable { border-spacing: 0; padding: 0; margin: 0; border: 0; }
+/* LineHighlight */ .chroma.light .hl { background-color: #dedede }
+/* LineNumbersTable */ .chroma.light .lnt { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #7f7f7f }
+/* LineNumbers */ .chroma.light .ln { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #7f7f7f }
+/* Line */ .chroma.light .line { display: flex; }
+/* Keyword */ .chroma.light .k { color: #cf222e }
+/* KeywordConstant */ .chroma.light .kc { color: #cf222e }
+/* KeywordDeclaration */ .chroma.light .kd { color: #cf222e }
+/* KeywordNamespace */ .chroma.light .kn { color: #cf222e }
+/* KeywordPseudo */ .chroma.light .kp { color: #cf222e }
+/* KeywordReserved */ .chroma.light .kr { color: #cf222e }
+/* KeywordType */ .chroma.light .kt { color: #cf222e }
+/* NameAttribute */ .chroma.light .na { color: #1f2328 }
+/* NameClass */ .chroma.light .nc { color: #1f2328 }
+/* NameConstant */ .chroma.light .no { color: #0550ae }
+/* NameDecorator */ .chroma.light .nd { color: #0550ae }
+/* NameEntity */ .chroma.light .ni { color: #6639ba }
+/* NameLabel */ .chroma.light .nl { color: #990000; font-weight: bold }
+/* NameNamespace */ .chroma.light .nn { color: #24292e }
+/* NameOther */ .chroma.light .nx { color: #1f2328 }
+/* NameTag */ .chroma.light .nt { color: #0550ae }
+/* NameBuiltin */ .chroma.light .nb { color: #6639ba }
+/* NameBuiltinPseudo */ .chroma.light .bp { color: #6a737d }
+/* NameVariable */ .chroma.light .nv { color: #953800 }
+/* NameVariableClass */ .chroma.light .vc { color: #953800 }
+/* NameVariableGlobal */ .chroma.light .vg { color: #953800 }
+/* NameVariableInstance */ .chroma.light .vi { color: #953800 }
+/* NameVariableMagic */ .chroma.light .vm { color: #953800 }
+/* NameFunction */ .chroma.light .nf { color: #6639ba }
+/* NameFunctionMagic */ .chroma.light .fm { color: #6639ba }
+/* LiteralString */ .chroma.light .s { color: #0a3069 }
+/* LiteralStringAffix */ .chroma.light .sa { color: #0a3069 }
+/* LiteralStringBacktick */ .chroma.light .sb { color: #0a3069 }
+/* LiteralStringChar */ .chroma.light .sc { color: #0a3069 }
+/* LiteralStringDelimiter */ .chroma.light .dl { color: #0a3069 }
+/* LiteralStringDoc */ .chroma.light .sd { color: #0a3069 }
+/* LiteralStringDouble */ .chroma.light .s2 { color: #0a3069 }
+/* LiteralStringEscape */ .chroma.light .se { color: #0a3069 }
+/* LiteralStringHeredoc */ .chroma.light .sh { color: #0a3069 }
+/* LiteralStringInterpol */ .chroma.light .si { color: #0a3069 }
+/* LiteralStringOther */ .chroma.light .sx { color: #0a3069 }
+/* LiteralStringRegex */ .chroma.light .sr { color: #0a3069 }
+/* LiteralStringSingle */ .chroma.light .s1 { color: #0a3069 }
+/* LiteralStringSymbol */ .chroma.light .ss { color: #032f62 }
+/* LiteralNumber */ .chroma.light .m { color: #0550ae }
+/* LiteralNumberBin */ .chroma.light .mb { color: #0550ae }
+/* LiteralNumberFloat */ .chroma.light .mf { color: #0550ae }
+/* LiteralNumberHex */ .chroma.light .mh { color: #0550ae }
+/* LiteralNumberInteger */ .chroma.light .mi { color: #0550ae }
+/* LiteralNumberIntegerLong */ .chroma.light .il { color: #0550ae }
+/* LiteralNumberOct */ .chroma.light .mo { color: #0550ae }
+/* Operator */ .chroma.light .o { color: #0550ae }
+/* OperatorWord */ .chroma.light .ow { color: #0550ae }
+/* OperatorReserved */ .chroma.light .or { color: #0550ae }
+/* Punctuation */ .chroma.light .p { color: #1f2328 }
+/* Comment */ .chroma.light .c { color: #57606a }
+/* CommentHashbang */ .chroma.light .ch { color: #57606a }
+/* CommentMultiline */ .chroma.light .cm { color: #57606a }
+/* CommentSingle */ .chroma.light .c1 { color: #57606a }
+/* CommentSpecial */ .chroma.light .cs { color: #57606a }
+/* CommentPreproc */ .chroma.light .cp { color: #57606a }
+/* CommentPreprocFile */ .chroma.light .cpf { color: #57606a }
+/* GenericDeleted */ .chroma.light .gd { color: #82071e; background-color: #ffebe9 }
+/* GenericEmph */ .chroma.light .ge { color: #1f2328 }
+/* GenericInserted */ .chroma.light .gi { color: #116329; background-color: #dafbe1 }
+/* GenericOutput */ .chroma.light .go { color: #1f2328 }
+/* GenericUnderline */ .chroma.light .gl { text-decoration: underline }
+/* TextWhitespace */ .chroma.light .w { color: #ffffff }
+/* Background */  :root[data-theme="dark"] .bg.light { color: #e6edf3; background-color: #0d1117; }
+/* PreWrapper */  :root[data-theme="dark"] .chroma.light { color: #e6edf3; background-color: #0d1117; -webkit-text-size-adjust: none; }
+/* Error */  :root[data-theme="dark"] .chroma.light .err { color: #f85149 }
+/* LineLink */  :root[data-theme="dark"] .chroma.light .lnlinks { outline: none; text-decoration: none; color: inherit }
+/* LineTableTD */  :root[data-theme="dark"] .chroma.light .lntd { vertical-align: top; padding: 0; margin: 0; border: 0; }
+/* LineTable */  :root[data-theme="dark"] .chroma.light .lntable { border-spacing: 0; padding: 0; margin: 0; border: 0; }
+/* LineHighlight */  :root[data-theme="dark"] .chroma.light .hl { background-color: #6e7681 }
+/* LineNumbersTable */  :root[data-theme="dark"] .chroma.light .lnt { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #737679 }
+/* LineNumbers */  :root[data-theme="dark"] .chroma.light .ln { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #6e7681 }
+/* Line */  :root[data-theme="dark"] .chroma.light .line { display: flex; }
+/* Keyword */  :root[data-theme="dark"] .chroma.light .k { color: #ff7b72 }
+/* KeywordConstant */  :root[data-theme="dark"] .chroma.light .kc { color: #79c0ff }
+/* KeywordDeclaration */  :root[data-theme="dark"] .chroma.light .kd { color: #ff7b72 }
+/* KeywordNamespace */  :root[data-theme="dark"] .chroma.light .kn { color: #ff7b72 }
+/* KeywordPseudo */  :root[data-theme="dark"] .chroma.light .kp { color: #79c0ff }
+/* KeywordReserved */  :root[data-theme="dark"] .chroma.light .kr { color: #ff7b72 }
+/* KeywordType */  :root[data-theme="dark"] .chroma.light .kt { color: #ff7b72 }
+/* NameClass */  :root[data-theme="dark"] .chroma.light .nc { color: #f0883e; font-weight: bold }
+/* NameConstant */  :root[data-theme="dark"] .chroma.light .no { color: #79c0ff; font-weight: bold }
+/* NameDecorator */  :root[data-theme="dark"] .chroma.light .nd { color: #d2a8ff; font-weight: bold }
+/* NameEntity */  :root[data-theme="dark"] .chroma.light .ni { color: #ffa657 }
+/* NameException */  :root[data-theme="dark"] .chroma.light .ne { color: #f0883e; font-weight: bold }
+/* NameLabel */  :root[data-theme="dark"] .chroma.light .nl { color: #79c0ff; font-weight: bold }
+/* NameNamespace */  :root[data-theme="dark"] .chroma.light .nn { color: #ff7b72 }
+/* NameProperty */  :root[data-theme="dark"] .chroma.light .py { color: #79c0ff }
+/* NameTag */  :root[data-theme="dark"] .chroma.light .nt { color: #7ee787 }
+/* NameVariable */  :root[data-theme="dark"] .chroma.light .nv { color: #79c0ff }
+/* NameVariableClass */  :root[data-theme="dark"] .chroma.light .vc { color: #79c0ff }
+/* NameVariableGlobal */  :root[data-theme="dark"] .chroma.light .vg { color: #79c0ff }
+/* NameVariableInstance */  :root[data-theme="dark"] .chroma.light .vi { color: #79c0ff }
+/* NameVariableMagic */  :root[data-theme="dark"] .chroma.light .vm { color: #79c0ff }
+/* NameFunction */  :root[data-theme="dark"] .chroma.light .nf { color: #d2a8ff; font-weight: bold }
+/* NameFunctionMagic */  :root[data-theme="dark"] .chroma.light .fm { color: #d2a8ff; font-weight: bold }
+/* Literal */  :root[data-theme="dark"] .chroma.light .l { color: #a5d6ff }
+/* LiteralDate */  :root[data-theme="dark"] .chroma.light .ld { color: #79c0ff }
+/* LiteralString */  :root[data-theme="dark"] .chroma.light .s { color: #a5d6ff }
+/* LiteralStringAffix */  :root[data-theme="dark"] .chroma.light .sa { color: #79c0ff }
+/* LiteralStringBacktick */  :root[data-theme="dark"] .chroma.light .sb { color: #a5d6ff }
+/* LiteralStringChar */  :root[data-theme="dark"] .chroma.light .sc { color: #a5d6ff }
+/* LiteralStringDelimiter */  :root[data-theme="dark"] .chroma.light .dl { color: #79c0ff }
+/* LiteralStringDoc */  :root[data-theme="dark"] .chroma.light .sd { color: #a5d6ff }
+/* LiteralStringDouble */  :root[data-theme="dark"] .chroma.light .s2 { color: #a5d6ff }
+/* LiteralStringEscape */  :root[data-theme="dark"] .chroma.light .se { color: #79c0ff }
+/* LiteralStringHeredoc */  :root[data-theme="dark"] .chroma.light .sh { color: #79c0ff }
+/* LiteralStringInterpol */  :root[data-theme="dark"] .chroma.light .si { color: #a5d6ff }
+/* LiteralStringOther */  :root[data-theme="dark"] .chroma.light .sx { color: #a5d6ff }
+/* LiteralStringRegex */  :root[data-theme="dark"] .chroma.light .sr { color: #79c0ff }
+/* LiteralStringSingle */  :root[data-theme="dark"] .chroma.light .s1 { color: #a5d6ff }
+/* LiteralStringSymbol */  :root[data-theme="dark"] .chroma.light .ss { color: #a5d6ff }
+/* LiteralNumber */  :root[data-theme="dark"] .chroma.light .m { color: #a5d6ff }
+/* LiteralNumberBin */  :root[data-theme="dark"] .chroma.light .mb { color: #a5d6ff }
+/* LiteralNumberFloat */  :root[data-theme="dark"] .chroma.light .mf { color: #a5d6ff }
+/* LiteralNumberHex */  :root[data-theme="dark"] .chroma.light .mh { color: #a5d6ff }
+/* LiteralNumberInteger */  :root[data-theme="dark"] .chroma.light .mi { color: #a5d6ff }
+/* LiteralNumberIntegerLong */  :root[data-theme="dark"] .chroma.light .il { color: #a5d6ff }
+/* LiteralNumberOct */  :root[data-theme="dark"] .chroma.light .mo { color: #a5d6ff }
+/* Operator */  :root[data-theme="dark"] .chroma.light .o { color: #ff7b72; font-weight: bold }
+/* OperatorWord */  :root[data-theme="dark"] .chroma.light .ow { color: #ff7b72; font-weight: bold }
+/* OperatorReserved */  :root[data-theme="dark"] .chroma.light .or { color: #ff7b72; font-weight: bold }
+/* Comment */  :root[data-theme="dark"] .chroma.light .c { color: #8b949e; font-style: italic }
+/* CommentHashbang */  :root[data-theme="dark"] .chroma.light .ch { color: #8b949e; font-style: italic }
+/* CommentMultiline */  :root[data-theme="dark"] .chroma.light .cm { color: #8b949e; font-style: italic }
+/* CommentSingle */  :root[data-theme="dark"] .chroma.light .c1 { color: #8b949e; font-style: italic }
+/* CommentSpecial */  :root[data-theme="dark"] .chroma.light .cs { color: #8b949e; font-weight: bold; font-style: italic }
+/* CommentPreproc */  :root[data-theme="dark"] .chroma.light .cp { color: #8b949e; font-weight: bold; font-style: italic }
+/* CommentPreprocFile */  :root[data-theme="dark"] .chroma.light .cpf { color: #8b949e; font-weight: bold; font-style: italic }
+/* GenericDeleted */  :root[data-theme="dark"] .chroma.light .gd { color: #ffa198; background-color: #490202 }
+/* GenericEmph */  :root[data-theme="dark"] .chroma.light .ge { font-style: italic }
+/* GenericError */  :root[data-theme="dark"] .chroma.light .gr { color: #ffa198 }
+/* GenericHeading */  :root[data-theme="dark"] .chroma.light .gh { color: #79c0ff; font-weight: bold }
+/* GenericInserted */  :root[data-theme="dark"] .chroma.light .gi { color: #56d364; background-color: #0f5323 }
+/* GenericOutput */  :root[data-theme="dark"] .chroma.light .go { color: #8b949e }
+/* GenericPrompt */  :root[data-theme="dark"] .chroma.light .gp { color: #8b949e }
+/* GenericStrong */  :root[data-theme="dark"] .chroma.light .gs { font-weight: bold }
+/* GenericSubheading */  :root[data-theme="dark"] .chroma.light .gu { color: #79c0ff }
+/* GenericTraceback */  :root[data-theme="dark"] .chroma.light .gt { color: #ff7b72 }
+/* GenericUnderline */  :root[data-theme="dark"] .chroma.light .gl { text-decoration: underline }
+/* TextWhitespace */  :root[data-theme="dark"] .chroma.light .w { color: #6e7681 }
+:root[data-theme="dark"] .chroma.light :is(.na, .nb, .bp, .nx, .p, .ge) { color: inherit; }
+
+  </style>
+</head>
+<body>
+  <div class="theme-controls" role="group" aria-label="Appearance controls">
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light or dark theme" aria-pressed="false">☾</button>
+    <div class="palette-switcher" aria-label="Color palette">
+      <button class="palette-button" type="button" data-palette-choice="sepia" aria-label="Sepia palette" aria-pressed="false"></button>
+      <button class="palette-button" type="button" data-palette-choice="blue" aria-label="Blue palette" aria-pressed="false"></button>
+      <button class="palette-button" type="button" data-palette-choice="green" aria-label="Green palette" aria-pressed="false"></button>
+      <button class="palette-button" type="button" data-palette-choice="rose" aria-label="Rose palette" aria-pressed="false"></button>
+      <button class="palette-button" type="button" data-palette-choice="catppuccin" aria-label="Catppuccin palette" aria-pressed="false"></button>
+    </div>
+  </div>
+  <article class="markdown-body">
+<h1 id="distill--remote-eval-primary-model-selection">distill — Remote-Eval-Primary Model Selection</h1>
+<nav class="toc" aria-label="Table of contents">
+<ul>
+<li class="toc-h2"><a href="#tldr">TL;DR</a></li>
+<li class="toc-h2"><a href="#per-role-decision">Per-role decision</a></li>
+<li class="toc-h2"><a href="#cross-reference-roster--public-boards-2026-06-24">Cross-reference: roster × public boards (2026-06-24)</a></li>
+<li class="toc-h2"><a href="#boards-to-follow-primary">Boards to follow (PRIMARY)</a></li>
+<li class="toc-h2"><a href="#fallback-rule-when-local-evals-apply">FALLBACK rule (when local evals apply)</a></li>
+<li class="toc-h2"><a href="#what-was-wired-6-commits">What was wired (6 commits)</a></li>
+</ul>
+</nav>
+<p><strong>Date:</strong> 2026-06-24 · <strong>Decision:</strong> public benchmark leaderboards are now the PRIMARY signal for choosing models per role; distill's local evals are the SECONDARY / fallback signal.</p>
+<p>This report records the cross-reference that drove the new per-role config defaults, the public boards to follow, and the code that wires it.</p>
+<hr>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li>Selection is now <strong>remote-primary</strong>: pick the best-ranked model <em>among the cost-capped OpenRouter roster</em> (<code>runs/roster.sh</code>, ≤ $8 / 1M out) on each role's closest public leaderboard.</li>
+<li>The public boards <strong>independently corroborate</strong> distill's own merit tournament: <code>z-ai/glm-5.2</code> is the #1 prose model in the roster on EQ-Bench, matching the local result.</li>
+<li>Faithfulness boards reveal a split a single model can't exploit — <strong>research/fuse want the least-hallucinating small model</strong> (<code>gemini-2.5-flash-lite</code>, HHEM 3.3%), while <strong>write/edit want the best prose model</strong> (<code>glm-5.2</code>). The digest pipeline now uses per-role models.</li>
+<li>Local evals remain the fallback for roles/models the public boards don't cover (the FALLBACK rule).</li>
+</ul>
+<hr>
+<h2 id="per-role-decision">Per-role decision</h2>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Primary benchmark</th>
+<th>Pick</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>research (extract facts, no fabrication)</td>
+<td>Vectara HHEM</td>
+<td><code>google/gemini-2.5-flash-lite</code></td>
+<td>least-hallucinating roster model (~3.3%); cheap + fast for N-parallel chunks</td>
+</tr>
+<tr>
+<td>fuse (faithful synthesis)</td>
+<td>llm-stats Open LLM</td>
+<td><code>deepseek/deepseek-v4-pro</code></td>
+<td>strong synthesis (GPQA 90.1), low fabrication (HHEM 8.6)</td>
+</tr>
+<tr>
+<td>write (narrative prose)</td>
+<td>EQ-Bench CW v3</td>
+<td><code>z-ai/glm-5.2</code></td>
+<td>#1 roster prose; corroborates local merit tournament</td>
+</tr>
+<tr>
+<td>edit (polish prose)</td>
+<td>EQ-Bench CW v3</td>
+<td><code>z-ai/glm-5.2</code></td>
+<td>prose polish</td>
+</tr>
+<tr>
+<td>judge (pairwise merit)</td>
+<td>EQ-Bench Judgemark + Panickssery</td>
+<td><code>deepseek/deepseek-v4-pro</code></td>
+<td>strong, different family from writer → no self-preference</td>
+</tr>
+<tr>
+<td>default / fallback</td>
+<td>llm-stats composite</td>
+<td><code>z-ai/glm-5.2</code></td>
+<td>best roster all-rounder</td>
+</tr>
+<tr>
+<td>code (bucket)</td>
+<td>Aider Polyglot / llm-stats SWE</td>
+<td><code>deepseek/deepseek-v4-pro</code></td>
+<td>SWE-Bench 80.6%; Aider is the only Go anchor</td>
+</tr>
+<tr>
+<td>label / sentiment (bucket)</td>
+<td>none (category dead)</td>
+<td><code>google/gemini-2.5-flash-lite</code></td>
+<td>route on cost + latency</td>
+</tr>
+<tr>
+<td>comedy (bucket)</td>
+<td>EQ-Bench CW v3</td>
+<td><code>z-ai/glm-5.2</code></td>
+<td>top roster creative</td>
+</tr>
+<tr>
+<td>embeddings</td>
+<td>MTEB</td>
+<td><code>qwen/qwen3-embedding-8b</code> (keep)</td>
+<td>not covered by text boards</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="cross-reference-roster--public-boards-2026-06-24">Cross-reference: roster × public boards (2026-06-24)</h2>
+<p>Frontier leaders (opus-4.8, gpt-5.5, gemini-3-pro) are off-roster by the $8/1M cost cap, so these are the standings of the <em>cheap candidates</em>.</p>
+<table>
+<thead>
+<tr>
+<th>Roster model</th>
+<th>EQ-Bench CW v3 (prose Elo)</th>
+<th>Vectara HHEM (halluc %, ↓)</th>
+<th>llm-stats (GPQA / SWE)</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>z-ai/glm-5.2</td>
+<td><strong>#8 · 1793</strong> (best roster)</td>
+<td>~10</td>
+<td>GPQA <strong>91.2</strong></td>
+<td>write / edit / comedy / default</td>
+</tr>
+<tr>
+<td>deepseek/deepseek-v4-pro</td>
+<td>#27 · 1561</td>
+<td>8.6</td>
+<td>GPQA 90.1 · SWE <strong>80.6</strong></td>
+<td>fuse / judge / code</td>
+</tr>
+<tr>
+<td>google/gemini-2.5-flash-lite</td>
+<td>low</td>
+<td><strong>3.3</strong> (best roster)</td>
+<td>—</td>
+<td>research / label</td>
+</tr>
+<tr>
+<td>openai/gpt-5-nano</td>
+<td>low</td>
+<td><strong>~3.1</strong></td>
+<td>—</td>
+<td>research alt</td>
+</tr>
+<tr>
+<td>moonshotai/kimi-k2.6</td>
+<td>#10 · 1767</td>
+<td>mid</td>
+<td>LiveBench 78.6</td>
+<td>write alt</td>
+</tr>
+<tr>
+<td>qwen/qwen3.6-35b-a3b</td>
+<td>mid</td>
+<td>4.8–5.9 (good)</td>
+<td>GPQA ~87.8</td>
+<td>extraction alt</td>
+</tr>
+<tr>
+<td>google/gemma-4-31b-it</td>
+<td>—</td>
+<td>—</td>
+<td><strong>value</strong> 1281 · GPQA 84.3</td>
+<td>cheap all-round alt</td>
+</tr>
+<tr>
+<td>xiaomi/mimo-v2.5</td>
+<td>—</td>
+<td>—</td>
+<td>Arena-Hard strong</td>
+<td>—</td>
+</tr>
+<tr>
+<td>bytedance-seed/seed-2.0-mini</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>z-ai/glm-4.7-flash</td>
+<td>—</td>
+<td>—</td>
+<td>GPQA 85.7</td>
+<td>—</td>
+</tr>
+<tr>
+<td>amazon/nova-lite-v1</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Load-bearing finding:</strong> on EQ-Bench v3, GPT-5.5 wins the single-grade <em>rubric</em> but loses the <em>pairwise Elo</em> to two Claude models — the exact single-vs-pairwise divergence distill's order-swapped panel is built to catch. Pairwise &gt; rubric for prose is externally validated.</p>
+<hr>
+<h2 id="boards-to-follow-primary">Boards to follow (PRIMARY)</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Board</th>
+<th>Measures</th>
+<th>URL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>llm-stats Open LLM</td>
+<td>open-weight composite (coding arena + GPQA + SWE + price + latency)</td>
+<td><a href="https://llm-stats.com/leaderboards/open-llm-leaderboard">https://llm-stats.com/leaderboards/open-llm-leaderboard</a></td>
+</tr>
+<tr>
+<td>2</td>
+<td>EQ-Bench Creative Writing v3</td>
+<td>long-form prose quality, pairwise Elo + slop</td>
+<td><a href="https://eqbench.com/creative_writing.html">https://eqbench.com/creative_writing.html</a></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Vectara HHEM</td>
+<td>summarization faithfulness (hallucination rate)</td>
+<td><a href="https://github.com/vectara/hallucination-leaderboard">https://github.com/vectara/hallucination-leaderboard</a></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Aider Polyglot</td>
+<td>unit-test pass-rate incl. Go</td>
+<td><a href="https://aider.chat/docs/leaderboards/">https://aider.chat/docs/leaderboards/</a></td>
+</tr>
+<tr>
+<td>5</td>
+<td>EQ-Bench Judgemark</td>
+<td>model quality as a judge</td>
+<td><a href="https://eqbench.com/judgemark.html">https://eqbench.com/judgemark.html</a></td>
+</tr>
+</tbody>
+</table>
+<p>Method citations: Panickssery et al. 2024 (<a href="https://arxiv.org/abs/2404.13076">https://arxiv.org/abs/2404.13076</a>) for judge/writer family separation; FactScore (<a href="https://arxiv.org/abs/2305.14251">https://arxiv.org/abs/2305.14251</a>) / VeriScore (<a href="https://arxiv.org/pdf/2406.19276">https://arxiv.org/pdf/2406.19276</a>) as the methodological twins of the local 86-fact harness.</p>
+<p><strong>Refresh on demand</strong> via <code>Agent(dc:fetch-agent, &quot;&lt;url&gt;&quot;)</code>, then re-derive the table and update <code>config.yaml</code>.</p>
+<hr>
+<h2 id="fallback-rule-when-local-evals-apply">FALLBACK rule (when local evals apply)</h2>
+<ul>
+<li>Roster model <strong>absent</strong> from the board → score it locally (<code>distill eval facts</code>, <code>distill tournament</code>/<code>panel</code>).</li>
+<li>Board <strong>inconclusive</strong> (within noise) → tiebreak with the aligned local harness.</li>
+<li>Role has <strong>no public board</strong> (label/sentiment) → route on cost + latency; local macro-F1 as a floor.</li>
+</ul>
+<hr>
+<h2 id="what-was-wired-6-commits">What was wired (6 commits)</h2>
+<table>
+<thead>
+<tr>
+<th>Commit</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>644381c</code></td>
+<td>config: per-role + judge model keys (<code>EffectiveRole</code>/<code>EffectiveJudge</code>)</td>
+</tr>
+<tr>
+<td><code>980eaf4</code></td>
+<td>digest engine: <code>RoleCompleters</code> across research/fuse/write/edit + per-role clients</td>
+</tr>
+<tr>
+<td><code>754f24c</code></td>
+<td>judge resolution via <code>cfg.EffectiveJudge</code> (eval/calibrate/tournament)</td>
+</tr>
+<tr>
+<td><code>7a29080</code></td>
+<td>config.yaml: remote-derived per-role + judge defaults</td>
+</tr>
+<tr>
+<td><code>17ffea9</code></td>
+<td>docs: remote-eval crosswalk + demote local evals</td>
+</tr>
+<tr>
+<td><code>4bf5c2b</code></td>
+<td>config-driven panel/recognize judge rosters</td>
+</tr>
+</tbody>
+</table>
+<p>Verified: <code>go build ./...</code> clean, <code>go vet ./...</code> clean, <code>go test ./...</code> all pass, tree clean at HEAD <code>4bf5c2b</code>.</p>
+<blockquote>
+<p>Caveat: the per-role picks are inferred from the June-2026 leaderboard snapshots captured this session. Refresh the boards (above) before relying on them for a high-stakes run.</p>
+</blockquote>
+
+  </article>
+  <script>
+/* copy.js — adds a Copy button to every <pre> block, no dependencies */
+
+(function () {
+  "use strict";
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var pres = document.querySelectorAll("pre");
+
+    pres.forEach(function (pre) {
+      var btn = document.createElement("button");
+      btn.className = "copy-btn";
+      btn.textContent = "Copy";
+      btn.setAttribute("aria-label", "Copy code to clipboard");
+      pre.appendChild(btn);
+
+      btn.addEventListener("click", function () {
+        // Read from the <code> child, not the whole pre (avoids including "Copy")
+        var code = pre.querySelector("code");
+        var text = code ? code.textContent : pre.textContent;
+
+        // Remove a trailing newline that some renderers inject before the button
+        if (text.endsWith("\n")) {
+          text = text.slice(0, -1);
+        }
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(
+            function () {
+              markCopied(btn);
+            },
+            function () {
+              fallbackCopy(text, btn);
+            },
+          );
+        } else {
+          fallbackCopy(text, btn);
+        }
+      });
+    });
+
+    function markCopied(btn) {
+      btn.textContent = "Copied";
+      btn.classList.add("copied");
+      setTimeout(function () {
+        btn.textContent = "Copy";
+        btn.classList.remove("copied");
+      }, 1500);
+    }
+
+    function fallbackCopy(text, btn) {
+      // execCommand fallback for environments without clipboard API
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        var ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        if (ok) {
+          markCopied(btn);
+        }
+      } catch (_) {
+        // No-op: clipboard unavailable, button stays silent
+      }
+    }
+  });
+})();
+
+  </script>
+  <script>
+/* headings.js — adds an unobtrusive anchor link to each heading with an id,
+   for copying a direct same-page link. No dependencies. */
+
+(function () {
+  "use strict";
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var headings = document.querySelectorAll(
+      ".markdown-body h1[id], .markdown-body h2[id], .markdown-body h3[id]," +
+        ".markdown-body h4[id], .markdown-body h5[id], .markdown-body h6[id]",
+    );
+
+    headings.forEach(function (h) {
+      var a = document.createElement("a");
+      a.className = "heading-anchor";
+      a.href = "#" + h.id;
+      a.textContent = "#";
+      a.setAttribute("aria-label", "Link to this section");
+      h.appendChild(a);
+    });
+  });
+})();
+
+  </script>
+  <script>
+(() => {
+  document.querySelectorAll("[data-report-tabs]").forEach((tabs) => {
+    const buttons = Array.from(tabs.querySelectorAll('[role="tab"]'));
+    const panels = Array.from(tabs.querySelectorAll('[role="tabpanel"]'));
+
+    const selectTab = (index, focus) => {
+      buttons.forEach((button, i) => {
+        const selected = i === index;
+        button.setAttribute("aria-selected", String(selected));
+        button.setAttribute("tabindex", selected ? "0" : "-1");
+        if (selected && focus) {
+          button.focus();
+        }
+      });
+      panels.forEach((panel, i) => {
+        panel.hidden = i !== index;
+      });
+    };
+
+    const selectedIndex = buttons.findIndex((button) => button.getAttribute("aria-selected") === "true");
+    selectTab(selectedIndex >= 0 ? selectedIndex : 0, false);
+
+    buttons.forEach((button, index) => {
+      button.addEventListener("click", () => {
+        selectTab(index, false);
+      });
+      button.addEventListener("keydown", (event) => {
+        const last = buttons.length - 1;
+        let next = null;
+        switch (event.key) {
+          case "ArrowLeft":
+          case "ArrowUp":
+            next = index === 0 ? last : index - 1;
+            break;
+          case "ArrowRight":
+          case "ArrowDown":
+            next = index === last ? 0 : index + 1;
+            break;
+          case "Home":
+            next = 0;
+            break;
+          case "End":
+            next = last;
+            break;
+          default:
+            return;
+        }
+        event.preventDefault();
+        selectTab(next, true);
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-report-slides]").forEach((deck) => {
+    const slides = Array.from(deck.querySelectorAll(".report-slide"));
+    if (slides.length <= 1) return;
+    const prev = deck.querySelector("[data-slide-prev]");
+    const nextButton = deck.querySelector("[data-slide-next]");
+    const status = deck.querySelector("[data-slide-status]");
+
+    let index = 0;
+    const show = (next) => {
+      index = Math.max(0, Math.min(slides.length - 1, next));
+      slides.forEach((slide, i) => {
+        const active = i === index;
+        slide.hidden = !active;
+        slide.setAttribute("aria-current", active ? "true" : "false");
+      });
+      if (prev) {
+        prev.disabled = index === 0;
+      }
+      if (nextButton) {
+        nextButton.disabled = index === slides.length - 1;
+      }
+      if (status) {
+        status.textContent = `${index + 1} / ${slides.length}`;
+      }
+      const active = slides[index];
+      active.tabIndex = -1;
+      active.focus({ preventScroll: true });
+    };
+
+    show(0);
+
+    if (prev) {
+      prev.addEventListener("click", () => show(index - 1));
+    }
+    if (nextButton) {
+      nextButton.addEventListener("click", () => show(index + 1));
+    }
+
+    document.addEventListener("keydown", (event) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+      const t = event.target;
+      if (t && (t.isContentEditable || t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
+        return;
+      }
+      let next = null;
+      switch (event.key) {
+        case "ArrowRight":
+        case "ArrowDown":
+        case "PageDown":
+        case " ":
+          next = index + 1;
+          break;
+        case "ArrowLeft":
+        case "ArrowUp":
+        case "PageUp":
+          next = index - 1;
+          break;
+        case "Home":
+          next = 0;
+          break;
+        case "End":
+          next = slides.length - 1;
+          break;
+        default:
+          return;
+      }
+      event.preventDefault();
+      show(next);
+    });
+  });
+
+  document.querySelectorAll(".report-table-wrap").forEach((wrap) => {
+    const input = wrap.querySelector(".report-filter");
+    const status = wrap.querySelector(".report-filter-status");
+    const table = wrap.querySelector("[data-report-table]");
+    const mobileSort = wrap.querySelector(".report-mobile-sort select");
+    if (!table) return;
+    const tbody = table.tBodies[0];
+    if (!tbody) return;
+    const emptyRow = tbody.querySelector("[data-report-empty-row]");
+    const dataRows = () => Array.from(tbody.rows).filter((row) => !row.hasAttribute("data-report-empty-row"));
+
+    const updateStatus = () => {
+      const rows = dataRows();
+      const visible = rows.filter((row) => !row.hidden).length;
+      if (emptyRow) {
+        emptyRow.hidden = visible !== 0;
+        const cell = emptyRow.cells[0];
+        if (cell) {
+          cell.textContent = rows.length === 0 ? "No rows" : "No rows match";
+        }
+      }
+      if (!status) return;
+      status.textContent = rows.length === 0 ? "No rows" : visible === 0 ? "No rows match" : `${visible} ${visible === 1 ? "row" : "rows"}`;
+    };
+
+    if (input) {
+      input.addEventListener("input", () => {
+        const needle = input.value.toLowerCase();
+        dataRows().forEach((row) => {
+          row.hidden = needle && !row.textContent.toLowerCase().includes(needle);
+        });
+        updateStatus();
+      });
+    }
+    updateStatus();
+
+    const headers = Array.from(table.tHead.rows[0].cells);
+    const syncSortLabels = () => {
+      headers.forEach((cell, index) => {
+        const button = cell.querySelector("button");
+        if (!button) return;
+        const label = button.dataset.sortLabel || button.textContent.trim() || `column ${index + 1}`;
+        const nextDirection = cell.getAttribute("aria-sort") === "ascending" ? "descending" : "ascending";
+        button.setAttribute("aria-label", `Sort by ${label} ${nextDirection}`);
+      });
+      if (mobileSort) {
+        const activeIndex = headers.findIndex((cell) => cell.hasAttribute("aria-sort"));
+        if (activeIndex < 0) {
+          mobileSort.value = "";
+          return;
+        }
+        mobileSort.value = `${activeIndex}:${headers[activeIndex].getAttribute("aria-sort")}`;
+      }
+    };
+    syncSortLabels();
+
+    const sortBy = (index, asc) => {
+      const rows = dataRows();
+      rows.sort((a, b) => {
+        const av = a.cells[index]?.textContent || "";
+        const bv = b.cells[index]?.textContent || "";
+        const cmp = av.localeCompare(bv, undefined, { numeric: true, sensitivity: "base" });
+        return asc ? cmp : -cmp;
+      });
+      headers.forEach((header) => header.removeAttribute("aria-sort"));
+      if (headers[index]) {
+        headers[index].setAttribute("aria-sort", asc ? "ascending" : "descending");
+      }
+      syncSortLabels();
+      rows.forEach((row) => tbody.appendChild(row));
+    };
+
+    headers.forEach((cell, index) => {
+      const button = cell.querySelector("button");
+      if (!button) return;
+      button.addEventListener("click", () => {
+        const asc = cell.getAttribute("aria-sort") !== "ascending";
+        sortBy(index, asc);
+      });
+    });
+
+    if (mobileSort) {
+      mobileSort.addEventListener("change", () => {
+        const [index, direction] = mobileSort.value.split(":");
+        const column = Number(index);
+        if (!Number.isInteger(column) || column < 0 || column >= headers.length) return;
+        sortBy(column, direction !== "descending");
+      });
+    }
+  });
+})();
+
+(() => {
+  const comments = Array.from(document.querySelectorAll(".review-card .review-comment"));
+  if (comments.length === 0) return;
+
+  const keyFor = (el) => `html-review:${el.dataset.reviewId || ""}`;
+
+  comments.forEach((el) => {
+    try {
+      const saved = localStorage.getItem(keyFor(el));
+      if (saved !== null) el.value = saved;
+    } catch (e) {}
+    el.addEventListener("input", () => {
+      try {
+        localStorage.setItem(keyFor(el), el.value);
+      } catch (e) {}
+    });
+  });
+
+  const copyButton = document.querySelector(".review-copy");
+  if (!copyButton) return;
+
+  const buildExport = () => {
+    const blocks = [];
+    comments.forEach((el) => {
+      const value = el.value.trim();
+      if (!value) return;
+      const id = el.dataset.reviewId || "";
+      blocks.push(`## ${id}\n${value}`);
+    });
+    if (blocks.length === 0) return "";
+    return `# Review comments\n\n${blocks.join("\n\n")}`;
+  };
+
+  copyButton.addEventListener("click", () => {
+    const text = buildExport();
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+    } else {
+      fallbackCopy(text);
+    }
+  });
+
+  function fallbackCopy(text) {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "absolute";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    try {
+      document.execCommand("copy");
+    } catch (e) {}
+    document.body.removeChild(area);
+  }
+})();
+
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "chunk": "chunk-006",
+  "facts": [
+    {"id": "roadmap-year", "any": [["2025"]]},
+    {"id": "milestone-count", "any": [["four milestones"], ["4 milestones"]]},
+    {"id": "q1-thermal", "anchors": ["q1"], "any": [["thermal"]]},
+    {"id": "q2-sdk", "anchors": ["q2"], "any": [["sdk"]]},
+    {"id": "q2-third-party", "any": [["third-party"], ["third party"]]},
+    {"id": "q3-gdpr", "anchors": ["q3"], "any": [["gdpr"]]},
+    {"id": "q3-eu", "any": [["eu gdpr"], ["european union"], ["eu compliance"]]},
+    {"id": "thermal-price-open", "any": [["not been finalized"], ["not finalized"], ["not yet finalized"], ["not yet been finalized"]]}
+  ]
+}

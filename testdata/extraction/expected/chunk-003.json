@@ -1,0 +1,21 @@
+{
+  "chunk": "chunk-003",
+  "facts": [
+    {"id": "sensor-brand", "anchors": ["sony"]},
+    {"id": "sensor-model", "any": [["imx678"], ["imx 678"]]},
+    {"id": "megapixel", "any": [["12-megapixel"], ["12 megapixel"], ["12 mp"], ["12mp"]]},
+    {"id": "optical-format", "anchors": ["1/1.8"]},
+    {"id": "accelerator", "any": [["hailo-8"], ["hailo 8"]]},
+    {"id": "tops", "any": [["26 tops"]]},
+    {"id": "idle-power", "anchors": ["5.4"]},
+    {"id": "load-power", "anchors": ["9.1"]},
+    {"id": "load-condition", "any": [["full inference"], ["inference load"], ["full load"]]},
+    {"id": "storage-capacity", "any": [["256 gb"], ["256gb"]]},
+    {"id": "storage-medium", "any": [["microsd"], ["micro sd"], ["micro-sd"]]},
+    {"id": "storage-grade", "anchors": ["industrial"]},
+    {"id": "write-cycles", "anchors": ["3000"]},
+    {"id": "ip-rating", "anchors": ["ip66"]},
+    {"id": "temp-min", "anchors": ["-30"]},
+    {"id": "temp-max", "anchors": ["55"]}
+  ]
+}

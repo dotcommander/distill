@@ -1,0 +1,2 @@
+## Roadmap
+The 2025 roadmap has four milestones. In Q1 2025 the team will add a thermal-imaging variant. In Q2 2025 they will ship the Halcyon SDK for third-party models. In Q3 2025 they target EU GDPR compliance certification. The thermal variant's retail price has not been finalized.

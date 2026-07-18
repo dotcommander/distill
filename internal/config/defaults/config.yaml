@@ -1,0 +1,102 @@
+# distill configuration — edit to change the defaults for AI-backed commands.
+# CLI flags and DISTILL_* environment variables take precedence over these.
+# Secrets (API keys) are NOT stored here — set provider API keys in the environment.
+
+# Text model for `digest`. Provider/API behavior is owned by Wormhole provider
+# integrations; remote custom endpoints are intentionally disabled. Non-prefixed
+# remote models target OpenRouter. DeepSeek, Z.AI/GLM, and Gemini model IDs route
+# to their direct built-in Wormhole providers.
+model: z-ai/glm-5.2
+# OpenRouter base URL for non-prefixed remote text models.
+base_url: https://openrouter.ai/api/v1
+
+# Per-role digest models — chosen from public benchmark leaderboards cross-referenced
+# against the OpenRouter roster (runs/roster.sh). Each falls back to `model` when unset.
+# See docs/remote-eval-crosswalk.md. --model / $DISTILL_MODEL override all roles.
+research_model: google/gemini-2.5-flash-lite                  # Vectara HHEM: least-hallucinating roster model (~3.3%)
+# Optional second-pass extractor for `digest --cascade`. Leave empty to force
+# an explicit config choice before spending extra extraction calls.
+research_escalation_model:
+outline_model: deepseek/deepseek-v4-pro                      # digest bakeoff: better section consolidation than glm (small output)
+fuse_model: deepseek/deepseek-v4-pro                          # llm-stats: strong synthesis/GPQA 90.1, low fabrication
+write_model: deepseek/deepseek-v4-pro                        # digest bakeoff (2026-06-25): tighter, more coherent prose than glm
+# write A/B candidate: moonshotai/kimi-k2.6 (EQ-Bench Creative #10, Elo 1767) — test via `--model` or by swapping write_model
+edit_model: deepseek/deepseek-v4-pro                         # digest bakeoff: aggressive, faithful tightening
+# Secondary model tried when a per-call retry budget is exhausted (a different
+# family from the role models, so a provider/model hiccup actually recovers).
+fallback_model: z-ai/glm-5.2
+# Judge models. eval_judge_model = fidelity (eval precision/recall/F1); merit_judge_model
+# = readability (grade calibrate/tournament). Both fall back to judge_model when unset.
+# Different family from write_model to avoid self-preference bias (Panickssery et al. 2404.13076).
+judge_model: deepseek/deepseek-v4-pro                            # legacy fallback for both judges
+eval_judge_model: google/gemini-2.5-flash-lite                   # Vectara HHEM #3 (~3.3%): most-faithful fact-checker
+merit_judge_model: z-ai/glm-5.2                                  # EQ-Bench Judgemark: prose discriminator (73 vs deepseek 47)
+
+# Judge rosters for the de-biased panel tournaments (`panel`, `comedy`, `recognize`).
+# Comma-separated model IDs. Leave unset to use the built-in strong panel; the --judges
+# flag overrides per run. Set these to roster models (runs/roster.sh) for cost-capped runs.
+# panel_judges: z-ai/glm-5.2,deepseek/deepseek-v4-pro,moonshotai/kimi-k2.6,qwen/qwen3.6-35b-a3b
+# recognize_judges: z-ai/glm-5.2,deepseek/deepseek-v4-pro
+
+# Embedding model for `chunk --mode semantic`.
+embedding_model: qwen/qwen3-embedding-8b
+# OpenAI-compatible embeddings base URL.
+embedding_endpoint: https://openrouter.ai/api/v1
+
+# Local profile — used ONLY when --local is passed. Local models are strictly
+# avoided by default; these point at an on-box OpenAI-compatible server.
+local_model: Qwen3.6-35B-A3B-oQ4-fp16-mtp
+local_base_url: http://127.0.0.1:8000/v1
+local_embedding_model: Qwen3-Embedding-4B-mxfp8
+local_embedding_endpoint: http://127.0.0.1:8000/v1
+
+# DeepSeek profile — used when a text model ID is a DeepSeek model, or when
+# --deepseek forces the whole command to DeepSeek. This goes directly to
+# DeepSeek's OpenAI-compatible API using $DEEPSEEK_API_KEY, not through OpenRouter.
+# Direct DeepSeek completions disable thinking by default for efficient normal
+# completions; digest runs also send a stable hashed user_id for KV-cache isolation.
+deepseek_model: deepseek-v4-pro
+deepseek_base_url: https://api.deepseek.com
+
+# Z.AI profile — used when a text model ID is a GLM model (z-ai/glm-*, glm-*).
+# Routes directly to Z.AI's OpenAI-compatible API using $ZAI_API_KEY (fallback
+# $ZHIPU_API_KEY), not through OpenRouter. wormhole appends /chat/completions.
+# Coding-plan endpoint (api/coding/paas/v4), not the standard api/paas/v4.
+zai_base_url: https://api.z.ai/api/coding/paas/v4
+
+# Default writer style for `digest`. The writer turns the researchers' notes into
+# a finished article in this voice. Pass a preset name from styles below
+# (for example: --style reference) or any free-form description.
+style: flowing, well-connected prose that reads like a thoughtful written explainer
+# Named style presets. --style <name> expands to the matching description below;
+# any other --style value is used verbatim.
+styles:
+  narrative: flowing, well-connected prose that reads like a thoughtful written explainer
+  brief: a tight executive brief with short sections, bold lead sentences, and bullets for supporting detail
+  faq: a question-and-answer document, each major topic as a question heading with a concise answer
+  reference: a clear, well-structured Markdown document with headings and lists for quick lookup
+# Per-LLM-call timeout in seconds for `digest` (applied to each extraction and
+# the rewrite). Generous by default so large rewrites finish; lower it to fail
+# faster on a stuck endpoint.
+request_timeout_seconds: 300
+# Max concurrent per-chunk extraction calls in `digest`. Speeds up multi-worker
+# (cloud) endpoints; a single-model local server serializes requests regardless.
+extract_concurrency: 4
+# Per-call retry attempts for the digest outline/section/edit stages on transient
+# (non-systemic) provider errors before falling back to fallback_model.
+request_retries: 3
+# Sentence batch size for optional `digest --check-precision` judging.
+precision_batch_size: 80
+# Minimum source-specific capture ratio before `digest --cascade` fires one
+# extra extraction pass for a fresh chunk.
+cascade_min_capture: 0.55
+# Cosine similarity threshold for optional `digest --merge-facts` clustering.
+merge_facts_threshold: 0.90
+# Minimum original fact IDs per cluster-outline section before stub clusters are
+# merged into their nearest semantic neighbor.
+min_section_facts: 3
+# Oversized cluster split factor: cap facts per section at
+# ceil(total_routed_facts / max_sections * factor) when max_sections is set.
+cluster_balance_factor: 1.5
+# Cap on outline sections in cluster-outline mode (0 = uncapped).
+max_sections: 8

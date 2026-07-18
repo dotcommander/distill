@@ -10,12 +10,15 @@ part of the public repository and must remain private.
 
 - Treat `origin/main` as the canonical base for all new work.
 - Never use `--allow-unrelated-histories`, force-push an older lineage, or merge,
-  rebase, or push `archive/private-pre-public-history` into a public branch.
-- The local archive branch has no upstream by design. Do not publish it or add a
-  remote tracking branch for it.
+  rebase, or push `refs/archive/private-pre-public-history` into a public branch.
+- The old lineage is retained only as the local non-branch ref
+  `refs/archive/private-pre-public-history`. This keeps it out of normal branch
+  and tag pushes. Do not convert it to a branch or tag, publish it, or configure
+  a push refspec for it.
 - If an old change is needed, reimplement the smallest reviewed change on a
   branch created from `origin/main`; do not merge or wholesale cherry-pick the
-  private lineage.
+  private lineage. Inspect it explicitly with
+  `git log refs/archive/private-pre-public-history`.
 - Before pushing `main` or a release tag, verify that the public root is still
   unique:
 

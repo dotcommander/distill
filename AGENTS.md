@@ -1,6 +1,28 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents working in this repository.
+
+## Public History Boundary
+
+The public repository intentionally starts at the scrubbed root commit
+`d01649189fde035d962fe7876f7ce16851a62de1`. Earlier development history is not
+part of the public repository and must remain private.
+
+- Treat `origin/main` as the canonical base for all new work.
+- Never use `--allow-unrelated-histories`, force-push an older lineage, or merge,
+  rebase, or push `archive/private-pre-public-history` into a public branch.
+- The local archive branch has no upstream by design. Do not publish it or add a
+  remote tracking branch for it.
+- If an old change is needed, reimplement the smallest reviewed change on a
+  branch created from `origin/main`; do not merge or wholesale cherry-pick the
+  private lineage.
+- Before pushing `main` or a release tag, verify that the public root is still
+  unique:
+
+  ```bash
+  test "$(git rev-list --max-parents=0 main)" = "d01649189fde035d962fe7876f7ce16851a62de1"
+  git merge-base --is-ancestor d01649189fde035d962fe7876f7ce16851a62de1 main
+  ```
 
 ## What is distill?
 

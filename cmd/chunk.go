@@ -12,7 +12,7 @@ import (
 	"github.com/dotcommander/distill/internal/manifest"
 	"github.com/dotcommander/distill/internal/tokenizer"
 
-	"github.com/dotcommander/reliquary/pipeline/chunking"
+	"github.com/dotcommander/reliquary/chunking"
 )
 
 // chunkFlags holds the resolved --chunk flag values for one invocation. It is

@@ -179,7 +179,23 @@ func parseAndRun(ctx context.Context, name, description string, tree any, args [
 		}
 	}
 	out := &commandOutput{stdin: stdin, stdout: stdout, stderr: stderr, flags: presentFlags(args)}
-	parser, err := kong.New(tree, kong.Name(name), kong.Description(description), kong.Vars{"panel_judges": defaultPanelJudges, "recognize_judges": defaultRecognizeJudges}, kong.Writers(stdout, stderr), kong.BindTo(ctx, (*context.Context)(nil)), kong.Bind(out), kong.ConfigureHelp(kong.HelpOptions{NoExpandSubcommands: true}), kong.Help(distillHelp))
+	parser, err := kong.New(
+		tree,
+		kong.Name(name),
+		kong.Description(description),
+		kong.Vars{"panel_judges": defaultPanelJudges, "recognize_judges": defaultRecognizeJudges},
+		kong.Writers(stdout, stderr),
+		kong.BindTo(ctx, (*context.Context)(nil)),
+		kong.Bind(out),
+		kong.ConfigureHelp(kong.HelpOptions{
+			Compact:             true,
+			Tree:                true,
+			Summary:             true,
+			FlagsLast:           true,
+			NoExpandSubcommands: true,
+		}),
+		kong.Help(distillHelp),
+	)
 	if err != nil {
 		return err
 	}

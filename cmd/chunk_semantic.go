@@ -11,7 +11,7 @@ import (
 	"github.com/dotcommander/distill/internal/config"
 	"github.com/dotcommander/distill/internal/embedcache"
 
-	"github.com/dotcommander/reliquary/pipeline/chunking"
+	"github.com/dotcommander/reliquary/chunking"
 )
 
 // chunkSemantic builds a remote OpenAI-compatible embedder (resolving model and

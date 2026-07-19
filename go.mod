@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/alecthomas/kong v1.14.0
-	github.com/dotcommander/reliquary v0.3.1
+	github.com/dotcommander/reliquary v0.8.0
 	github.com/garyblankenship/wormhole v1.24.0
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/stretchr/testify v1.11.1

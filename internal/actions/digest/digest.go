@@ -28,7 +28,7 @@ import (
 	"github.com/dotcommander/distill/internal/structured"
 	"github.com/dotcommander/distill/internal/tokenizer"
 
-	"github.com/dotcommander/reliquary/pipeline/chunking"
+	"github.com/dotcommander/reliquary/chunking"
 	"golang.org/x/sync/errgroup"
 )
 

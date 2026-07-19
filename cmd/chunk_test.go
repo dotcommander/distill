@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/dotcommander/distill/internal/manifest"
-	"github.com/dotcommander/reliquary/pipeline/chunking"
+	"github.com/dotcommander/reliquary/chunking"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

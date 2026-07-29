@@ -39,6 +39,11 @@ type precisionResponse struct {
 }
 
 func checkPrecision(ctx context.Context, llm Completer, p *prompts.Set, facts string, sentences []string, batchSize int, ledger *runLedger, timeout time.Duration, attempts int, backoff time.Duration) (PrecisionResult, error) {
+	return checkPrecisionDispatched(ctx, llm, p, facts, sentences, batchSize, ledger, nil, timeout, attempts, backoff)
+}
+
+//nolint:gocognit,revive // Precision batches intentionally keep accounting and parsing coupled.
+func checkPrecisionDispatched(ctx context.Context, llm Completer, p *prompts.Set, facts string, sentences []string, batchSize int, ledger *runLedger, dispatcher *Dispatcher, timeout time.Duration, attempts int, backoff time.Duration) (PrecisionResult, error) {
 	if batchSize < 1 {
 		batchSize = 80
 	}
@@ -52,7 +57,7 @@ func checkPrecision(ctx context.Context, llm Completer, p *prompts.Set, facts st
 		name := fmt.Sprintf("batch-%03d", start/batchSize+1)
 		started := time.Now()
 		beforeUsage := ledger.usageNow()
-		out, err := retryComplete(ctx, "precision "+name, llm, p.RenderPrecision(facts, numberedSentences(start, batch)), timeout, attempts, backoff)
+		out, err := retryRoleComplete(ctx, Options{Dispatcher: dispatcher}, "precision", "precision "+name, llm, p.RenderPrecision(facts, numberedSentences(start, batch)), timeout, attempts, backoff)
 		ledger.Record("precision", name, "call", started, err, beforeUsage)
 		if err != nil {
 			return result, fmt.Errorf("digest: precision %s: %w", name, err)
@@ -147,6 +152,11 @@ func numberedSentences(start int, sentences []string) string {
 // result with deterministic fact-coverage. On hard error, empty response, or
 // coverage degradation, it returns the pre-repair article unchanged.
 func repairPrecision(ctx context.Context, llm Completer, p *prompts.Set, facts string, flagged []UnsupportedSentence, article string, coverageBase string, preCov extractscore.SpecificsResult, ledger *runLedger, timeout time.Duration, attempts int, backoff time.Duration) (string, extractscore.SpecificsResult, error) {
+	return repairPrecisionDispatched(ctx, llm, p, facts, flagged, article, coverageBase, preCov, ledger, nil, timeout, attempts, backoff)
+}
+
+//nolint:revive // This pipeline adapter mirrors repairPrecision for legacy callers.
+func repairPrecisionDispatched(ctx context.Context, llm Completer, p *prompts.Set, facts string, flagged []UnsupportedSentence, article string, coverageBase string, preCov extractscore.SpecificsResult, ledger *runLedger, dispatcher *Dispatcher, timeout time.Duration, attempts int, backoff time.Duration) (string, extractscore.SpecificsResult, error) {
 	flaggedBlock := renderFlaggedSentences(flagged)
 	if flaggedBlock == "" {
 		return article, preCov, nil
@@ -154,7 +164,7 @@ func repairPrecision(ctx context.Context, llm Completer, p *prompts.Set, facts s
 
 	started := time.Now()
 	beforeUsage := ledger.usageNow()
-	repaired, err := retryComplete(ctx, "precision-repair", llm, p.RenderPrecisionRepair(facts, flaggedBlock, article), timeout, attempts, backoff)
+	repaired, err := retryRoleComplete(ctx, Options{Dispatcher: dispatcher}, "precision-repair", "precision-repair", llm, p.RenderPrecisionRepair(facts, flaggedBlock, article), timeout, attempts, backoff)
 	ledger.Record("precision-repair", "", "call", started, err, beforeUsage)
 	if err != nil {
 		slog.WarnContext(ctx, "digest precision repair failed, keeping pre-repair article", "err", err)

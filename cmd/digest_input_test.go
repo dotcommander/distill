@@ -37,8 +37,12 @@ func TestReadDigestInputCombinesPathspecsWithBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2 files", input.Source)
 	assert.True(t, input.Multi)
-	assert.Contains(t, input.Text, "# Source: "+a+"\n\nalpha")
-	assert.Contains(t, input.Text, "# Source: "+b+"\n\nbeta")
+	assert.Contains(t, input.Text, "# Source 01\n\nalpha")
+	assert.Contains(t, input.Text, "# Source 02\n\nbeta")
+	assert.NotContains(t, input.Text, dir)
+	require.Len(t, input.Parts, 2)
+	assert.Equal(t, a, input.Parts[0].Path)
+	assert.Equal(t, b, input.Parts[1].Path)
 	assert.Less(t, strings.Index(input.Text, "alpha"), strings.Index(input.Text, "beta"))
 }
 

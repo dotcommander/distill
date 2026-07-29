@@ -98,10 +98,16 @@ func TestLoadFromMergesPartialStyleMap(t *testing.T) {
 		t.Fatalf("write partial config: %v", err)
 	}
 	c, err := loadFrom(path)
-	if err != nil { t.Fatalf("loadFrom: %v", err) }
-	if got := c.Styles["custom"]; got != "concise custom prose" { t.Fatalf("custom style = %q", got) }
+	if err != nil {
+		t.Fatalf("loadFrom: %v", err)
+	}
+	if got := c.Styles["custom"]; got != "concise custom prose" {
+		t.Fatalf("custom style = %q", got)
+	}
 	for _, inherited := range []string{"narrative", "brief", "faq", "reference"} {
-		if c.Styles[inherited] == "" { t.Errorf("default style %q was lost during partial map overlay", inherited) }
+		if c.Styles[inherited] == "" {
+			t.Errorf("default style %q was lost during partial map overlay", inherited)
+		}
 	}
 }
 

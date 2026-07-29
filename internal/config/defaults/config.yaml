@@ -82,8 +82,8 @@ request_timeout_seconds: 300
 # Max concurrent per-chunk extraction calls in `digest`. Speeds up multi-worker
 # (cloud) endpoints; a single-model local server serializes requests regardless.
 extract_concurrency: 4
-# Per-call retry attempts for the digest outline/section/edit stages on transient
-# (non-systemic) provider errors before falling back to fallback_model.
+# Maximum primary attempts for each digest call, including the first, on
+# transient/rate-limit/timeout/empty failures before one explicit fallback.
 request_retries: 3
 # Sentence batch size for optional `digest --check-precision` judging.
 precision_batch_size: 80

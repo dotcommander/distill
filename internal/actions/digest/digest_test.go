@@ -909,15 +909,14 @@ func (errLLM) Complete(_ context.Context, _ string) (string, error) {
 	return "", errors.New("boom")
 }
 
-// emptyLLM returns the empty-response sentinel for every call (exercises the
-// soft-skip path: an empty model response must be recorded, not abort the run).
+// emptyLLM returns the empty-response sentinel for every call.
 type emptyLLM struct{}
 
 func (emptyLLM) Complete(_ context.Context, _ string) (string, error) {
 	return "", ai.ErrEmptyResponse
 }
 
-func TestResearchEmptyResponseIsSoftSkip(t *testing.T) {
+func TestResearchEmptyResponseIsTerminal(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	opts := Options{
@@ -930,15 +929,13 @@ func TestResearchEmptyResponseIsSoftSkip(t *testing.T) {
 	llm := emptyLLM{}
 	_, err := Run(context.Background(), RoleCompleters{Research: llm, Fuse: llm, Outline: llm, Section: llm, Edit: llm}, testPrompts(), "# Title\n\nbody one.", opts)
 	if err == nil {
-		t.Fatal("expected a no-facts error when every chunk is empty, got nil")
+		t.Fatal("expected terminal research error, got nil")
 	}
-	// Empty responses must NOT surface as a hard research abort; they are
-	// skipped, leaving the run to fail later with "no facts extracted".
-	if strings.Contains(err.Error(), "research") {
-		t.Fatalf("empty response should be soft-skipped, not a research abort: %v", err)
+	if !strings.Contains(err.Error(), "research") || !errors.Is(err, ai.ErrEmptyResponse) {
+		t.Fatalf("expected terminal empty research response, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no facts extracted") {
-		t.Fatalf("expected no-facts error, got: %v", err)
+	if _, statErr := os.Stat(opts.OutPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("partial research must not publish output: %v", statErr)
 	}
 }
 
@@ -1030,8 +1027,7 @@ func TestSectionRetrySucceeds(t *testing.T) {
 	}
 }
 
-// deadSectionLLM always fails SECTION calls with a transient error so retries
-// exhaust and the section degrades; other roles succeed.
+// deadSectionLLM always fails SECTION calls with a transient error.
 type deadSectionLLM struct{}
 
 func (deadSectionLLM) Complete(_ context.Context, prompt string) (string, error) {
@@ -1045,7 +1041,7 @@ func (deadSectionLLM) Complete(_ context.Context, prompt string) (string, error)
 	}
 }
 
-func TestSectionDegradesAfterRetries(t *testing.T) {
+func TestSectionFailureIsTerminalAfterRetries(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	llm := deadSectionLLM{}
@@ -1058,16 +1054,12 @@ func TestSectionDegradesAfterRetries(t *testing.T) {
 		Retries:     2,
 		RetryDelay:  time.Millisecond,
 	}
-	res, err := Run(context.Background(), RoleCompleters{Research: llm, Fuse: llm, Outline: llm, Section: llm, Edit: llm}, testPrompts(), "# Title\n\nbody one.", opts)
-	if err != nil {
-		t.Fatalf("degradation must not abort the run: %v", err)
+	_, err := Run(context.Background(), RoleCompleters{Research: llm, Fuse: llm, Outline: llm, Section: llm, Edit: llm}, testPrompts(), "# Title\n\nbody one.", opts)
+	if err == nil || !strings.Contains(err.Error(), "section") {
+		t.Fatalf("expected terminal section error, got: %v", err)
 	}
-	if len(res.FailedSections) != 1 {
-		t.Fatalf("expected 1 failed section recorded, got %v", res.FailedSections)
-	}
-	out, _ := os.ReadFile(opts.OutPath)
-	if !strings.Contains(string(out), "could not be generated") {
-		t.Fatalf("expected stub placeholder in output, got: %q", out)
+	if _, statErr := os.Stat(opts.OutPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed section must not publish output: %v", statErr)
 	}
 }
 

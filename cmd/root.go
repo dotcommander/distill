@@ -78,8 +78,8 @@ type digestCommand struct {
 	Style               string   `help:"Target style for the rewrite (default from config)"`
 	Out                 string   `help:"Output path for the rewrite (default: <source>.distilled.md)"`
 	Facts               string   `help:"Path for the compiled facts checkpoint (default: <artifacts>/facts.compiled.md)"`
-	Artifacts           string   `help:"Artifacts directory: absent, empty, or exactly source-marker-bound only; unbound non-empty directories are refused without mutation (default: temp dir)"`
-	Model               string   `help:"Pin every text role, including precision judge and cascade escalation; falls back to $DISTILL_MODEL."`
+	Artifacts           string   `help:"Artifacts directory: absent, empty, or exact schema-v2 provenance-bound only; v1 and mismatched directories are preserved and refused (default: temp dir)"`
+	Model               string   `help:"Pin every text role and disable cross-provider fallback; falls back to $DISTILL_MODEL."`
 	BaseURL             string   `name:"base-url" help:"Local OpenAI-compatible base URL. Remote custom API endpoints are disabled; use built-in Wormhole providers."`
 	Local               bool     `help:"Use the local model profile (local_model/local_base_url) instead of the remote OpenRouter default. The local endpoint gets $DISTILL_LOCAL_API_KEY (never $OPENAI_API_KEY)."`
 	Deepseek            bool     `help:"Use the direct DeepSeek profile (deepseek_model/deepseek_base_url) with $DEEPSEEK_API_KEY."`
@@ -87,16 +87,16 @@ type digestCommand struct {
 	MaxTokens           int      `name:"max-tokens" default:"4000" help:"Hard Claude token ceiling per chunk; oversize character chunks are split (0 disables)"`
 	Concurrency         int      `help:"Max parallel chunk extractions (default from config, else 4)"`
 	Timeout             int      `help:"Per-LLM-call timeout in seconds (default from config, else 300)"`
-	Retries             int      `help:"Per-call retry attempts for outline/section/edit on transient errors (default from config, else 3)"`
-	MaxCalls            int      `name:"max-calls" help:"Hard aggregate text-plus-embedding request ceiling (0 unlimited); actual usage is reported and the displayed plan is advisory"`
+	Retries             int      `help:"Maximum primary attempts per logical digest call, including the first (default from config, else 3)"`
+	MaxCalls            int      `name:"max-calls" help:"Authoritative digest preflight and runtime provider-call ceiling (0 unlimited); finite planning excludes dynamic merge, target-facts, and precision work"`
 	ReuseFacts          bool     `name:"reuse-facts" help:"Reuse an existing compiled-facts checkpoint (skip extraction)"`
 	NoClean             bool     `name:"no-clean" help:"Do not auto-clean detected transcript (VTT/SRT) input"`
 	Clean               bool     `help:"Force transcript cleaning even when format detection is unsure"`
 	Fuse                bool     `help:"Run the fuse stage that merges per-chunk notes before writing (off by default; can time out on large inputs)"`
 	NoEdit              bool     `name:"no-edit" help:"Skip the editor stage that polishes the writer draft"`
 	Appendix            bool     `help:"Append the verbatim extracted facts as a lossless appendix (recovers tables/ranked lists the prose stage samples away)"`
-	Resume              bool     `default:"true" help:"Reuse complete artifacts from a previous run in --artifacts to avoid repeated paid calls (use --resume=false to force regeneration)"`
-	DryRun              bool     `name:"dry-run" help:"Plan chunks, role models, endpoints, and artifact paths without making provider calls"`
+	Resume              bool     `default:"true" help:"Reuse only provenance-verified schema-v2 checkpoints from --artifacts (use --resume=false to force regeneration)"`
+	DryRun              bool     `name:"dry-run" help:"Validate and display the exact packed call plan without provider calls or artifact creation"`
 	NoCache             bool     `name:"no-cache" help:"Skip digest caches: neither read nor store output articles or research responses"`
 	ResearchCache       bool     `name:"research-cache" help:"Reuse per-chunk research responses across runs (disabled by --no-cache)"`
 	Context             string   `help:"Free-text guidance to steer the rewrite's emphasis/framing (injected into outline/section/edit prompts, never extraction)"`

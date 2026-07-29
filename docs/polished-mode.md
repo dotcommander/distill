@@ -78,14 +78,26 @@ does not create an absent artifact directory.
 ## Artifacts To Inspect
 
 `--artifacts` accepts only an absent/new directory, an empty directory, or a
-directory whose `source.json` exactly matches the cleaned source and chunking
-settings. A non-empty directory with a missing, unreadable, corrupt, or
-mismatched marker is refused without mutation.
+schema-v2 directory whose `source.json` binds the ordered source hashes,
+normalization/chunk algorithm versions, geometry, and every packed chunk hash.
+A v1 directory, or a non-empty directory with a missing, unreadable, corrupt,
+or mismatched marker, is left untouched and refused with a fresh-path hint.
+Reusable responses also require matching metadata sidecars.
 
-`--max-calls` is a hard aggregate ceiling across text and embedding provider
-requests (`0` is unlimited). The dry-run call plan is advisory because runtime
-inputs, cache hits, embedding batches, and retries change actual usage. Finite
-runs report `request budget: <used>/<limit>`.
+`--max-calls` is both an authoritative mandatory-work preflight and a hard
+runtime provider-call ceiling (`0` is unlimited). Dry-run and execution use the
+same packed plan. Mandatory first attempts are reserved; verified reuse and
+cache hits release reservations, and optional retry/fallback attempts cannot
+starve later stages. `--retries` counts maximum primary attempts including the
+first. One explicit `fallback_model` attempt follows eligible primary failures
+when credentials and recovery headroom are available; an explicit model pin
+disables fallback.
+
+Finite `--max-calls` planning is intentionally unavailable with
+`--merge-facts`, `--target-facts`, or `--check-precision`, because their
+embedding, cluster, and sentence-batch counts are not knowable before earlier
+provider stages finish. Run those modes without a finite ceiling or split them
+into separately planned runs.
 
 - `facts.compiled.md` is the raw extracted-facts checkpoint.
 - `responses/facts.merged.md` is the post-merge fact set used for planning.
@@ -93,7 +105,8 @@ runs report `request budget: <used>/<limit>`.
 - `responses/draft.md` is the pre-edit article.
 - `responses/rewrite.cited.md` preserves temporary citations before stripping.
 - `responses/citations.json`, `responses/coverage.json`, and `responses/precision.json` are the verification records.
-- `run-ledger.jsonl` records provider calls, reuse events, repairs, and token deltas when available.
+- `run-ledger.jsonl` records versioned attempt routes, sent/not-started state, sanitized error classes, duration, usage, and reuse events.
+- `run-summary.json` records success or failure, the failing unit, call-plan and budget counts, provider/token usage, checkpoint reuse, hashes, elapsed time, and a redacted resume hint.
 
 ## Prompt Refresh
 

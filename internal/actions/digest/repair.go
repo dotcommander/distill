@@ -24,6 +24,7 @@ type repairInput struct {
 	timeout  time.Duration
 	attempts int
 	backoff  time.Duration
+	dispatch *Dispatcher
 }
 
 // repairMissing runs up to maxRepairPasses targeted reinsert passes against the
@@ -41,7 +42,7 @@ func repairMissing(in repairInput, factsAppendix, article string, cov extractsco
 		slog.InfoContext(ctx, "digest repair start", "missing", len(bestCov.Missing), "pass", pass+1)
 		started := time.Now()
 		beforeUsage := ledger.usageNow()
-		repaired, err := retryComplete(ctx, "repair", llm, p.RenderRepair(bestArticle, strings.Join(bestCov.Missing, "\n")), timeout, attempts, backoff)
+		repaired, err := retryRoleComplete(ctx, Options{Dispatcher: in.dispatch}, "edit", "repair", llm, p.RenderRepair(bestArticle, strings.Join(bestCov.Missing, "\n")), timeout, attempts, backoff)
 		ledger.Record("repair", "", "call", started, err, beforeUsage)
 		if err != nil {
 			if ai.IsSystemic(err) {
@@ -75,7 +76,7 @@ func repairMissingCited(in repairInput, units []factUnit, article string, citati
 		slog.InfoContext(ctx, "digest cited repair start", "missing", len(bestCitations.MissingIDs), "pass", pass+1)
 		started := time.Now()
 		beforeUsage := ledger.usageNow()
-		repaired, err := retryComplete(ctx, "cite-repair", llm, p.CiteRepair+p.RenderRepair(bestArticle, missing), timeout, attempts, backoff)
+		repaired, err := retryRoleComplete(ctx, Options{Dispatcher: in.dispatch}, "edit", "cite-repair", llm, p.CiteRepair+p.RenderRepair(bestArticle, missing), timeout, attempts, backoff)
 		ledger.Record("cite-repair", "", "call", started, err, beforeUsage)
 		if err != nil {
 			if ai.IsSystemic(err) {

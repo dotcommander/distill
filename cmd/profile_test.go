@@ -122,13 +122,22 @@ func TestEndpointForTextModelRejectsRemoteExplicitBaseURL(t *testing.T) {
 
 func TestResolveJudgesPresenceMatrix(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct { name string; current, configDefault string; changed, deepseek bool; want string }{
+	for _, tc := range []struct {
+		name                   string
+		current, configDefault string
+		changed, deepseek      bool
+		want                   string
+	}{
 		{"explicit beats deepseek", "explicit", "configured", true, true, "explicit"},
 		{"deepseek beats config", defaultPanelJudges, "configured", false, true, "deepseek-direct"},
 		{"config replaces built-in default", defaultPanelJudges, "configured", false, false, "configured"},
 		{"built-in survives empty config", defaultPanelJudges, "", false, false, defaultPanelJudges},
 	} {
-		t.Run(tc.name, func(t *testing.T) { if got:=resolveJudges(tc.current,"deepseek-direct",tc.configDefault,tc.changed,tc.deepseek); got!=tc.want { t.Fatalf("resolveJudges = %q, want %q",got,tc.want) } })
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveJudges(tc.current, "deepseek-direct", tc.configDefault, tc.changed, tc.deepseek); got != tc.want {
+				t.Fatalf("resolveJudges = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

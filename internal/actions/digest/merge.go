@@ -82,7 +82,7 @@ func mergeFacts(ctx context.Context, llm Completer, embedder BatchEmbedder, p *p
 		}
 		started := time.Now()
 		beforeUsage := ledger.usageNow()
-		out, cerr := complete(ctx, llm, p.RenderMergeFacts(fmt.Sprintf("cluster-%03d", clusterID), strings.Join(input, "\n")), opts.Timeout)
+		out, cerr := retryRoleComplete(ctx, opts, "fuse", "merge", llm, p.RenderMergeFacts(fmt.Sprintf("cluster-%03d", clusterID), strings.Join(input, "\n")), opts.Timeout, opts.Retries, opts.RetryDelay)
 		ledger.Record("merge", fmt.Sprintf("cluster-%03d", clusterID), "call", started, cerr, beforeUsage)
 		if cerr != nil {
 			return mergeResult{}, fmt.Errorf("digest: merge cluster-%03d: %w", clusterID, cerr)
@@ -295,7 +295,7 @@ func synthesizeOutlineFromClusters(ctx context.Context, llm Completer, p *prompt
 	}
 	started := time.Now()
 	beforeUsage := ledger.usageNow()
-	out, err := retryComplete(ctx, "cluster-labels", llm, p.RenderClusterLabels(strings.TrimSpace(prompt.String())), opts.Timeout, 1, time.Second)
+	out, err := retryRoleComplete(ctx, opts, "fuse", "cluster-labels", llm, p.RenderClusterLabels(strings.TrimSpace(prompt.String())), opts.Timeout, 1, time.Second)
 	ledger.Record("outline", "cluster-labels", "call", started, err, beforeUsage)
 	if err != nil {
 		return "", fmt.Errorf("digest: cluster labels: %w", err)

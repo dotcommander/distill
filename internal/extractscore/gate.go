@@ -9,12 +9,12 @@ import (
 // candidates from losers/failures/non-candidates, so the paid merit judge never
 // revisits them. A zero-value field disables that check.
 type GateConfig struct {
-	MinRecall       float64 `json:"minRecall"`       // drop low fact recall
-	MaxOverlap      float64 `json:"maxOverlap"`      // drop verbatim copiers
-	MinTensions     int     `json:"minTensions"`     // drop digests that flatten the discrepancies
-	RequireWordBand bool    `json:"requireWordBand"` // drop out-of-band lengths
-	RequireClean    bool    `json:"requireClean"`    // drop preamble/artifact hygiene failures
-	ExcludeModels   []string `json:"excludeModels"`  // drop models whose name contains any of these substrings (web-search/weak reads), case-insensitive
+	MinRecall       float64  `json:"minRecall"`       // drop low fact recall
+	MaxOverlap      float64  `json:"maxOverlap"`      // drop verbatim copiers
+	MinTensions     int      `json:"minTensions"`     // drop digests that flatten the discrepancies
+	RequireWordBand bool     `json:"requireWordBand"` // drop out-of-band lengths
+	RequireClean    bool     `json:"requireClean"`    // drop preamble/artifact hygiene failures
+	ExcludeModels   []string `json:"excludeModels"`   // drop models whose name contains any of these substrings (web-search/weak reads), case-insensitive
 	MaxFabrications int      `json:"maxFabrications"` // drop digests with MORE THAN this many flagged fabrications (0 disables)
 }
 

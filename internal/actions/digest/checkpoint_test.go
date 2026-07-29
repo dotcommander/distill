@@ -2,6 +2,7 @@ package digest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"math"
@@ -29,6 +30,17 @@ func checkpointRoles(llm Completer) RoleCompleters {
 	return RoleCompleters{Research: llm, Fuse: llm, Outline: llm, Section: llm, Edit: llm, Judge: llm}
 }
 
+func bindCheckpointArtifacts(t *testing.T, opts Options, source string) {
+	t.Helper()
+	plan, err := PlanPackedSources([]SourcePart{{Ordinal: 1, Text: source}}, opts.ChunkSize, opts.MaxTokens)
+	if err != nil {
+		t.Fatalf("PlanPackedSources: %v", err)
+	}
+	if _, err := PrepareArtifactBindingPlan(opts.ArtifactDir, plan); err != nil {
+		t.Fatalf("PrepareArtifactBindingPlan: %v", err)
+	}
+}
+
 func failCheckpointPath(path string, failAt int) func(string, []byte, fs.FileMode) error {
 	seen := 0
 	return func(got string, data []byte, perm fs.FileMode) error {
@@ -39,6 +51,19 @@ func failCheckpointPath(path string, failAt int) func(string, []byte, fs.FileMod
 			}
 		}
 		return fsutil.WriteFile(got, data, perm)
+	}
+}
+
+func failPublicationRename(path string, failAt int) func(string, string) error {
+	seen := 0
+	return func(oldpath, newpath string) error {
+		if newpath == path {
+			seen++
+			if seen == failAt {
+				return errors.New("injected publication rename failure")
+			}
+		}
+		return os.Rename(oldpath, newpath)
 	}
 }
 
@@ -74,8 +99,6 @@ func TestRunFailsForRequiredCheckpointWrites(t *testing.T) {
 		{"citations", func(o *Options, _ *fakeLLM) { o.Cite = true }, func(o Options) string { return filepath.Join(o.ArtifactDir, "responses", "citations.json") }, "citations", 1},
 		{"coverage", nil, func(o Options) string { return filepath.Join(o.ArtifactDir, "responses", "coverage.json") }, "coverage", 1},
 		{"precision", func(o *Options, _ *fakeLLM) { o.CheckPrecision = true }, func(o Options) string { return filepath.Join(o.ArtifactDir, "responses", "precision.json") }, "precision", 1},
-		{"final output", nil, func(o Options) string { return o.OutPath }, "final output", 1},
-		{"final artifact", nil, func(o Options) string { return filepath.Join(o.ArtifactDir, "responses", "rewrite.md") }, "final artifact", 1},
 		{"coverage replacement after repair", func(o *Options, l *fakeLLM) {
 			o.Edit = false
 			o.Repair = true
@@ -155,46 +178,137 @@ func TestWriteJSONCheckpointReportsEncodingAndPath(t *testing.T) {
 	}
 }
 
-func TestRunFinalArtifactFailureKeepsDurableOutput(t *testing.T) {
-	dir := t.TempDir()
-	opts := checkpointTestOptions(dir)
-	artifact := filepath.Join(opts.ArtifactDir, "responses", "rewrite.md")
-	opts.writeFile = failCheckpointPath(artifact, 1)
-	_, err := Run(context.Background(), checkpointRoles(&fakeLLM{}), testPrompts(), "# Title\n\nbody", opts)
-	if err == nil || !strings.Contains(err.Error(), "survives at") || !strings.Contains(err.Error(), opts.OutPath) {
-		t.Fatalf("Run error = %v, want surviving output diagnostic", err)
-	}
-	if _, err := os.Stat(opts.OutPath); err != nil {
-		t.Fatalf("durable output missing after artifact failure: %v", err)
+func TestRunFinalPublicationFailuresRemoveBothFinals(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stage string
+		path  func(Options) string
+	}{
+		{name: "output rename", stage: "publish final output", path: func(o Options) string { return o.OutPath }},
+		{name: "artifact rename", stage: "publish final artifact", path: func(o Options) string { return filepath.Join(o.ArtifactDir, "responses", "rewrite.md") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertFinalPublicationFailure(t, tc.stage, tc.path)
+		})
 	}
 }
 
-func TestRunCachedArtifactFailureKeepsDurableOutputAndOrdersWrites(t *testing.T) {
+func assertFinalPublicationFailure(t *testing.T, stage string, failedPath func(Options) string) {
+	t.Helper()
+	dir := t.TempDir()
+	opts := checkpointTestOptions(dir)
+	artifact := filepath.Join(opts.ArtifactDir, "responses", "rewrite.md")
+	bindCheckpointArtifacts(t, opts, "# Title\n\nbody")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(opts.OutPath, []byte("stale output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact, []byte("stale artifact"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts.renameFile = failPublicationRename(failedPath(opts), 1)
+	_, err := Run(context.Background(), checkpointRoles(&fakeLLM{}), testPrompts(), "# Title\n\nbody", opts)
+	if err == nil || !strings.Contains(err.Error(), stage) {
+		t.Fatalf("Run error = %v, want %q", err, stage)
+	}
+	for _, finalPath := range finalPublicationPaths(opts) {
+		if _, statErr := os.Stat(finalPath); !os.IsNotExist(statErr) {
+			t.Fatalf("failed run left final publication %q: %v", finalPath, statErr)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(opts.ArtifactDir, "responses", "draft.md")); statErr != nil {
+		t.Fatalf("failed publication removed resumable checkpoint: %v", statErr)
+	}
+}
+
+func TestRunCachedPublicationFailureRemovesBothFinals(t *testing.T) {
 	dir := t.TempDir()
 	cache := newMemCache()
 	cache.Store("cached", "cached article", CacheMeta{Words: 2})
 	opts := checkpointTestOptions(dir)
 	opts.Cache, opts.CacheKey, opts.CacheRead = cache, "cached", true
 	artifact := filepath.Join(opts.ArtifactDir, "responses", "rewrite.md")
-	var writes []string
-	writer := failCheckpointPath(artifact, 1)
-	opts.writeFile = func(path string, data []byte, perm fs.FileMode) error {
-		writes = append(writes, path)
-		return writer(path, data, perm)
+	bindCheckpointArtifacts(t, opts, "# Title\n\nbody")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(opts.OutPath, []byte("stale output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact, []byte("stale artifact"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts.renameFile = failPublicationRename(artifact, 1)
 	_, err := Run(context.Background(), checkpointRoles(&fakeLLM{}), testPrompts(), "# Title\n\nbody", opts)
-	if err == nil || !strings.Contains(err.Error(), "survives at") || !strings.Contains(err.Error(), opts.OutPath) {
-		t.Fatalf("Run error = %v, want surviving cached output diagnostic", err)
+	if err == nil || !strings.Contains(err.Error(), "publish final artifact") {
+		t.Fatalf("Run error = %v, want artifact publication failure", err)
 	}
-	if len(writes) != 2 || writes[0] != opts.OutPath || writes[1] != artifact {
-		t.Fatalf("cached write order = %v, want [%q %q]", writes, opts.OutPath, artifact)
-	}
-	if data, err := os.ReadFile(opts.OutPath); err != nil || string(data) != "cached article" {
-		t.Fatalf("cached durable output = %q, %v", data, err)
+	for _, finalPath := range finalPublicationPaths(opts) {
+		if _, statErr := os.Stat(finalPath); !os.IsNotExist(statErr) {
+			t.Fatalf("failed cache publication left final %q: %v", finalPath, statErr)
+		}
 	}
 }
 
-func TestRunContinuesWhenLedgerCannotInitialize(t *testing.T) {
+func TestRunPublishesSharedOutputAndRewritePathAtomically(t *testing.T) {
+	dir := t.TempDir()
+	opts := checkpointTestOptions(dir)
+	opts.OutPath = filepath.Join(opts.ArtifactDir, "responses", "rewrite.md")
+	if _, err := Run(context.Background(), checkpointRoles(&fakeLLM{}), testPrompts(), "# Title\n\nbody", opts); err != nil {
+		t.Fatalf("Run shared final path: %v", err)
+	}
+	data, err := os.ReadFile(opts.OutPath)
+	if err != nil || strings.TrimSpace(string(data)) == "" {
+		t.Fatalf("shared final output = %q, %v", data, err)
+	}
+}
+
+func TestRunCacheHitFinalGateFailureLeavesNoFinalsAndWritesFailureSummary(t *testing.T) {
+	dir := t.TempDir()
+	cache := newMemCache()
+	cache.Store("lax", "cached article", CacheMeta{Words: 2})
+	opts := checkpointTestOptions(dir)
+	opts.Cache, opts.CacheKey, opts.CacheRead = cache, "lax", true
+	opts.FinalGate = func(*Result) error { return errors.New("strict quality threshold") }
+	artifact := filepath.Join(opts.ArtifactDir, "responses", "rewrite.md")
+	bindCheckpointArtifacts(t, opts, "# Title\n\nbody")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(opts.OutPath, []byte("stale output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact, []byte("stale artifact"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), checkpointRoles(&fakeLLM{}), testPrompts(), "# Title\n\nbody", opts)
+	if err == nil || !strings.Contains(err.Error(), "quality-gate") {
+		t.Fatalf("Run error = %v, want quality gate failure", err)
+	}
+	if res == nil || !res.CacheHit {
+		t.Fatalf("cache gate result = %#v, want cache hit result", res)
+	}
+	for _, finalPath := range finalPublicationPaths(opts) {
+		if _, statErr := os.Stat(finalPath); !os.IsNotExist(statErr) {
+			t.Fatalf("rejected cache hit left final %q: %v", finalPath, statErr)
+		}
+	}
+	data, readErr := os.ReadFile(filepath.Join(opts.ArtifactDir, "run-summary.json"))
+	if readErr != nil {
+		t.Fatalf("read failure summary: %v", readErr)
+	}
+	var summary runSummary
+	if err := json.Unmarshal(data, &summary); err != nil {
+		t.Fatalf("parse failure summary: %v", err)
+	}
+	if summary.Status != "failed" || summary.FailingStage != "quality-gate" || summary.OutputSHA256 != "" {
+		t.Fatalf("failure summary = %+v", summary)
+	}
+}
+
+func TestRunFailsWhenLedgerCannotInitialize(t *testing.T) {
 	dir := t.TempDir()
 	blocked := filepath.Join(dir, "not-a-directory")
 	if err := os.WriteFile(blocked, []byte("file"), 0o644); err != nil {
@@ -206,10 +320,13 @@ func TestRunContinuesWhenLedgerCannotInitialize(t *testing.T) {
 	researchCache := newMemResearchCache()
 	opts.Cache, opts.CacheKey = articleCache, "checkpoint-control"
 	opts.ResearchCache = researchCache
-	if _, err := Run(context.Background(), checkpointRoles(&fakeLLM{}), testPrompts(), "# Title\n\nbody", opts); err != nil {
-		t.Fatalf("Run with unavailable ledger: %v", err)
+	if _, err := Run(context.Background(), checkpointRoles(&fakeLLM{}), testPrompts(), "# Title\n\nbody", opts); err == nil {
+		t.Fatal("Run with unavailable ledger succeeded")
 	}
-	if articleCache.stores != 1 || len(researchCache.stores) != 1 {
-		t.Fatalf("best-effort cache stores = article %d, research %d; want one each", articleCache.stores, len(researchCache.stores))
+	if _, err := os.Stat(opts.OutPath); !os.IsNotExist(err) {
+		t.Fatalf("unavailable ledger must prevent output publication: %v", err)
+	}
+	if articleCache.stores != 0 || len(researchCache.stores) != 0 {
+		t.Fatalf("cache stores after ledger initialization failure = article %d, research %d; want zero", articleCache.stores, len(researchCache.stores))
 	}
 }

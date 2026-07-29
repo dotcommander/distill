@@ -40,8 +40,8 @@ type Band struct {
 
 // DigestChecks is the doc-specific, non-fact review config for a digest.
 type DigestChecks struct {
-	Tensions []Tension  `json:"tensions"`
-	Hygiene  Hygiene    `json:"hygiene"`
+	Tensions     []Tension  `json:"tensions"`
+	Hygiene      Hygiene    `json:"hygiene"`
 	WordBand     Band       `json:"wordBand"`
 	Fabrications []string   `json:"fabrications"` // source-specific phrases that are KNOWN fabrications (verified absent from source); any match is an invented claim
 	Gate         GateConfig `json:"gate"`

@@ -30,13 +30,22 @@ import (
 	"github.com/dotcommander/distill/internal/tokenizer"
 
 	"github.com/dotcommander/reliquary/chunking"
-	"golang.org/x/sync/errgroup"
 )
 
 // Completer runs a single LLM completion. *ai.Client satisfies it.
 type Completer interface {
 	Complete(ctx context.Context, prompt string) (string, error)
 }
+
+const (
+	stageResearch    = "research"
+	stageFuse        = "fuse"
+	stageOutline     = "outline"
+	stageSection     = "section"
+	stageEdit        = "edit"
+	stageQualityGate = "quality-gate"
+	ledgerActionCall = "call"
+)
 
 // CacheMeta is the deterministic self-check metrics stored alongside a cached
 // article, so gates (--min-coverage/--min-words) evaluate identically on cache
@@ -110,13 +119,30 @@ type Options struct {
 	// command wires the deterministic quality gate here so a below-threshold
 	// article can never be served from the cache.
 	StoreOK func(*Result) bool
+	// FinalGate, when non-nil, runs after all result metrics are populated but
+	// before either final output is published. A rejection is a terminal quality
+	// stage failure and is reflected in run-summary.json.
+	FinalGate func(*Result) error
 	// Usage, when set, returns the provider's cumulative token counts (prompt,
 	// cached, output) at call time. The ledger snapshots it around each serial
 	// stage to record per-stage token deltas; the concurrent research stage is
 	// accounted as one phase-level event (per-call deltas would double-count
 	// across overlapping calls). Nil disables token accounting (deltas stay 0).
-	Usage     func() (prompt, cached, output int64)
-	writeFile func(path string, data []byte, perm fs.FileMode) error
+	Usage func() (prompt, cached, output int64)
+	// PackedPlan is normally prepared once by the CLI and shared by dry-run and
+	// execution. Run fills it for legacy single-source callers.
+	PackedPlan *PackedPlan
+	// CallPlan is the authoritative mandatory-stage plan prepared before any
+	// artifact or provider side effect. It is updated after a valid outline.
+	CallPlan *CallPlan
+	// Dispatcher owns explicit retry/fallback routing for digest roles.
+	Dispatcher *Dispatcher
+	// ProvenanceParameters contains the exact request policy shared by every
+	// reusable response. A non-nil map enables strict schema-v2 sidecars;
+	// missing or corrupt metadata is then never reused.
+	ProvenanceParameters map[string]string
+	writeFile            func(path string, data []byte, perm fs.FileMode) error
+	renameFile           func(oldpath, newpath string) error
 }
 
 func writeCheckpoint(opts Options, stage, path string, data []byte) error {
@@ -179,15 +205,40 @@ const factSeparator = "\n\n---\n\n"
 const nearDuplicateFactFlag = "<!-- near-duplicate fact: retained for review; compare with an earlier extracted fact before merging. -->"
 
 type ledgerEvent struct {
+	Version      int       `json:"version"`
 	Time         time.Time `json:"time"`
 	Stage        string    `json:"stage"`
-	Name         string    `json:"name,omitempty"`
+	Unit         string    `json:"unit,omitempty"`
 	Action       string    `json:"action"`
+	Route        string    `json:"route,omitempty"`
+	Provider     string    `json:"provider,omitempty"`
+	Model        string    `json:"model,omitempty"`
+	Attempt      int       `json:"attempt,omitempty"`
+	Sent         bool      `json:"sent"`
 	Duration     string    `json:"duration,omitempty"`
-	Error        string    `json:"error,omitempty"`
+	ErrorClass   string    `json:"error_class,omitempty"`
 	PromptTokens int64     `json:"prompt_tokens,omitempty"`
 	CachedTokens int64     `json:"cached_tokens,omitempty"`
 	OutputTokens int64     `json:"output_tokens,omitempty"`
+}
+
+func (l *runLedger) RecordAttempt(event AttemptEvent) {
+	if l == nil {
+		return
+	}
+	l.writeEvent(ledgerEvent{
+		Version:    2,
+		Time:       time.Now().UTC(),
+		Stage:      event.Role,
+		Action:     "attempt",
+		Route:      string(event.Route.Kind),
+		Provider:   event.Route.Provider,
+		Model:      event.Route.Model,
+		Attempt:    event.Attempt,
+		Sent:       event.Sent,
+		Duration:   event.Duration.Round(time.Millisecond).String(),
+		ErrorClass: ai.ErrorClass(event.Err),
+	})
 }
 
 // usageSnap is a point-in-time copy of the provider's cumulative token counts.
@@ -201,16 +252,28 @@ type runLedger struct {
 	mu    sync.Mutex
 	path  string
 	usage func() (prompt, cached, output int64)
+	err   error
 }
 
 func newRunLedger(path string, usage func() (prompt, cached, output int64)) (*runLedger, error) {
 	if path == "" {
 		return nil, nil
 	}
-	if os.MkdirAll(filepath.Dir(path), 0o750) == nil {
-		return &runLedger{path: path, usage: usage}, nil
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return nil, fmt.Errorf("digest: create ledger directory: %w", err)
 	}
-	return nil, nil
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("digest: initialize ledger: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("digest: sync initialized ledger: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("digest: close initialized ledger: %w", err)
+	}
+	return &runLedger{path: path, usage: usage}, nil
 }
 
 // usageNow returns the provider's current cumulative token counts, or a zero
@@ -251,29 +314,56 @@ func (l *runLedger) RecordZeroDelta(stage, name, action string, started time.Tim
 }
 
 func (l *runLedger) event(stage, name, action string, started time.Time, err error) ledgerEvent {
-	ev := ledgerEvent{Time: time.Now().UTC(), Stage: stage, Name: name, Action: action}
+	ev := ledgerEvent{Version: 2, Time: time.Now().UTC(), Stage: stage, Unit: name, Action: action, Sent: action == ledgerActionCall || action == "phase"}
 	if !started.IsZero() {
 		ev.Duration = time.Since(started).Round(time.Millisecond).String()
 	}
 	if err != nil {
-		ev.Error = err.Error()
+		ev.ErrorClass = ai.ErrorClass(err)
 	}
 	return ev
 }
 
 func (l *runLedger) writeEvent(ev ledgerEvent) {
+	if l == nil {
+		return
+	}
 	data, jerr := json.Marshal(ev)
 	if jerr != nil {
+		l.mu.Lock()
+		if l.err == nil {
+			l.err = fmt.Errorf("digest: encode ledger event: %w", jerr)
+		}
+		l.mu.Unlock()
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	f, ferr := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if ferr != nil {
+		if l.err == nil {
+			l.err = fmt.Errorf("digest: open ledger: %w", ferr)
+		}
 		return
 	}
-	_, _ = f.Write(append(data, '\n'))
-	_ = f.Close()
+	if _, ferr = f.Write(append(data, '\n')); ferr == nil {
+		ferr = f.Sync()
+	}
+	if closeErr := f.Close(); ferr == nil {
+		ferr = closeErr
+	}
+	if ferr != nil && l.err == nil {
+		l.err = fmt.Errorf("digest: append ledger: %w", ferr)
+	}
+}
+
+func (l *runLedger) Err() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.err
 }
 
 // complete runs a single LLM call, capping it with a per-call timeout when one is
@@ -322,14 +412,97 @@ func retryComplete(ctx context.Context, stage string, llm Completer, prompt stri
 		}
 		if a < attempts {
 			slog.WarnContext(ctx, "digest: retrying LLM call", "stage", stage, "attempt", a, "err", err)
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-time.After(retryBackoff(a, base)):
+			if err := waitRetry(ctx, retryBackoff(a, base)); err != nil {
+				return "", err
 			}
 		}
 	}
 	return "", lastErr
+}
+
+// retryRoleComplete is the sole normal digest completion dispatch point. When
+// a Dispatcher is configured it owns retries and explicit cross-provider
+// fallback; legacy direct callers retain retryComplete behavior.
+//
+//nolint:revive // The compatibility adapter carries the complete direct-call contract.
+func retryRoleComplete(ctx context.Context, opts Options, role, stage string, llm Completer, prompt string, timeout time.Duration, attempts int, base time.Duration) (string, error) {
+	out, _, err := retryRoleCompleteRoute(ctx, opts, role, stage, llm, prompt, timeout, attempts, base)
+	return out, err
+}
+
+//nolint:revive // Routing and legacy retry use the same complete call contract.
+func retryRoleCompleteRoute(ctx context.Context, opts Options, role, stage string, llm Completer, prompt string, timeout time.Duration, attempts int, base time.Duration) (string, Route, error) {
+	if opts.Dispatcher != nil {
+		out, route, _, err := opts.Dispatcher.Complete(ctx, role, prompt, timeout)
+		if err != nil {
+			return "", route, err
+		}
+		if strings.TrimSpace(out) == "" {
+			return "", route, ai.ErrEmptyResponse
+		}
+		return strings.TrimSpace(out), route, nil
+	}
+	out, err := retryComplete(ctx, stage, llm, prompt, timeout, attempts, base)
+	return out, Route{}, err
+}
+
+// retryOutline treats malformed and over-cap structures exactly like an empty
+// provider response: they are retryable invalid responses, never a reason to
+// allocate unplanned section calls.
+//
+//nolint:revive // Outline validation adds the cap to the common retry contract.
+func retryOutline(ctx context.Context, llm Completer, prompt string, timeout time.Duration, attempts int, base time.Duration, cap int) (string, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		out, err := complete(ctx, llm, prompt, timeout)
+		if err == nil {
+			out = strings.TrimSpace(out)
+			if validateOutline(out, cap) == nil {
+				return out, nil
+			}
+			err = fmt.Errorf("%w: %w", ai.ErrEmptyResponse, validateOutline(out, cap))
+		}
+		lastErr = err
+		if !ai.IsRetryable(err) || ctx.Err() != nil || attempt == attempts {
+			return "", err
+		}
+		if err := waitRetry(ctx, retryBackoff(attempt, base)); err != nil {
+			return "", err
+		}
+	}
+	return "", lastErr
+}
+
+func waitRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func validateOutline(out string, cap int) error {
+	title, sections := parseOutline(out)
+	if strings.TrimSpace(title) == "" || len(sections) == 0 {
+		return errors.New("outline must contain a title and at least one section")
+	}
+	if cap > 0 && len(sections) > cap {
+		return fmt.Errorf("outline has %d sections, cap is %d", len(sections), cap)
+	}
+	return nil
 }
 
 // RoleCompleters holds the per-stage model clients for the digest pipeline.
@@ -347,36 +520,112 @@ type RoleCompleters struct {
 	Judge              Completer
 }
 
-// Run executes the pipeline against source. Per-chunk extraction that returns an
-// empty response is recorded in Result.FailedChunks rather than aborting; a hard
-// LLM error fails the whole run fast. The run also fails if no facts could be
-// extracted at all.
+// Run executes the pipeline against source. Empty and failed mandatory
+// responses are terminal after dispatcher recovery is exhausted; durable
+// checkpoints and partial Result metadata remain available for resume.
 func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, opts Options) (*Result, error) {
+	started := time.Now()
+	if err := clearFinalPublication(opts); err != nil {
+		return finishRun(opts, started, nil, err)
+	}
+	plan, err := PlanPackedSources([]SourcePart{{Ordinal: 1, Text: source}}, opts.ChunkSize, opts.MaxTokens)
+	if err != nil {
+		return finishRun(opts, started, nil, err)
+	}
+	opts.PackedPlan = &plan
+	result, err := run(ctx, rc, p, source, opts)
+	return finishRun(opts, started, result, err)
+}
+
+// RunSources executes digest against ordered structured sources. Provider
+// prompts receive only Source NN labels and source content, never paths.
+func RunSources(ctx context.Context, rc RoleCompleters, p *prompts.Set, parts []SourcePart, opts Options) (*Result, error) {
+	started := time.Now()
+	if err := clearFinalPublication(opts); err != nil {
+		return finishRun(opts, started, nil, err)
+	}
+	plan := opts.PackedPlan
+	if plan == nil {
+		computed, err := PlanPackedSources(parts, opts.ChunkSize, opts.MaxTokens)
+		if err != nil {
+			return finishRun(opts, started, nil, err)
+		}
+		plan = &computed
+	} else if !samePackedSources(plan.Sources, parts) {
+		return finishRun(opts, started, nil, errors.New("digest: supplied packed plan does not match ordered source parts"))
+	}
+	opts.PackedPlan = plan
+	result, err := run(ctx, rc, p, joinSourceParts(plan.Sources), opts)
+	return finishRun(opts, started, result, err)
+}
+
+func samePackedSources(a, b []SourcePart) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Ordinal != b[i].Ordinal || a[i].Hash != digestHash(b[i].Text) {
+			return false
+		}
+	}
+	return true
+}
+
+func joinSourceParts(parts []SourcePart) string {
+	if len(parts) == 1 {
+		return parts[0].Text
+	}
+	var b strings.Builder
+	for i, part := range parts {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "# %s\n\n", SourceLabel(part.Ordinal))
+		b.WriteString(part.Text)
+	}
+	return b.String()
+}
+
+//nolint:funlen,gocognit,gocyclo,revive // This is the explicit durable stage machine for the full digest.
+func run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, opts Options) (*Result, error) {
 	if opts.writeFile == nil {
 		opts.writeFile = fsutil.WriteFile
+	}
+	if opts.renameFile == nil {
+		opts.renameFile = os.Rename
 	}
 	// Direct callers must receive the same fail-closed artifact protection as
 	// the CLI. The CLI prepares this before constructing clients; repeating it
 	// here protects callers that invoke Run without the CLI boundary.
-	reuseOK, err := PrepareArtifactBinding(opts.ArtifactDir, source, opts.ChunkSize, opts.MaxTokens)
+	if opts.PackedPlan == nil {
+		return nil, errors.New("digest: missing packed source plan")
+	}
+	if opts.CallPlan != nil {
+		if err := opts.CallPlan.Preflight(); err != nil {
+			return nil, err
+		}
+	}
+	reuseOK, err := PrepareArtifactBindingPlan(opts.ArtifactDir, *opts.PackedPlan)
 	if err != nil {
 		return nil, err
 	}
 	if opts.CacheRead && opts.Cache != nil && opts.CacheKey != "" {
 		if article, meta, ok := opts.Cache.Load(opts.CacheKey); ok {
-			if cacheOutputErr := writeCheckpoint(opts, "cached final output", opts.OutPath, []byte(article)); cacheOutputErr != nil {
-				return nil, cacheOutputErr
-			}
-			artifactPath := filepath.Join(opts.ArtifactDir, "responses", "rewrite.md")
-			if cacheArtifactErr := writeCheckpoint(opts, "cached final artifact", artifactPath, []byte(article)); cacheArtifactErr != nil {
-				return nil, fmt.Errorf("digest: cached final artifact copy failed; durable --out survives at %q: %w", opts.OutPath, cacheArtifactErr)
-			}
 			ledgerPath := opts.LedgerPath
 			if ledgerPath == "" && opts.ArtifactDir != "" {
 				ledgerPath = filepath.Join(opts.ArtifactDir, "run-ledger.jsonl")
 			}
+			res := &Result{OutPath: opts.OutPath, FactsPath: opts.FactsPath, LedgerPath: ledgerPath, CacheHit: true, Coverage: meta.Coverage, Citations: meta.Citations, Precision: meta.Precision, Words: meta.Words}
+			if opts.FinalGate != nil {
+				if gateErr := opts.FinalGate(res); gateErr != nil {
+					return res, &StageError{Stage: stageQualityGate, Err: gateErr}
+				}
+			}
+			if publishErr := publishFinal(opts, []byte(article)); publishErr != nil {
+				return res, publishErr
+			}
 			slog.InfoContext(ctx, "digest cache hit (skipped research/fuse/outline/section/edit stages)", "out", opts.OutPath)
-			return &Result{OutPath: opts.OutPath, FactsPath: opts.FactsPath, LedgerPath: ledgerPath, CacheHit: true, Coverage: meta.Coverage, Citations: meta.Citations, Precision: meta.Precision, Words: meta.Words}, nil
+			return res, nil
 		}
 	}
 	if opts.LedgerPath == "" && opts.ArtifactDir != "" {
@@ -385,6 +634,9 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 	ledger, err := newRunLedger(opts.LedgerPath, opts.Usage)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Dispatcher != nil {
+		opts.Dispatcher.SetObserver(ledger.RecordAttempt)
 	}
 	// A newly prepared marker has no reusable artifacts. opts is a value copy,
 	// so clearing Resume gates every reuse site — facts, research responses,
@@ -421,7 +673,7 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 
 	facts, err := resolveFacts(ctx, rc.Research, rc.ResearchEscalation, p, resolveFactsInput{source: source, opts: opts, result: res, ledger: ledger, verifiedDir: reuseOK})
 	if err != nil {
-		return nil, err
+		return res, &StageError{Stage: stageResearch, Err: err}
 	}
 	factsAppendix := facts // pre-fuse snapshot for the lossless appendix
 	coverageBase := facts
@@ -431,10 +683,10 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 		slog.InfoContext(ctx, "digest fuse start")
 		started := time.Now()
 		beforeUsage := ledger.usageNow()
-		fused, ferr := complete(ctx, rc.Fuse, p.RenderFuse(facts), opts.Timeout)
+		fused, ferr := retryRoleComplete(ctx, opts, "fuse", "fuse", rc.Fuse, p.RenderFuse(facts), opts.Timeout, retries, backoff)
 		ledger.Record("fuse", "", "call", started, ferr, beforeUsage)
 		if ferr != nil {
-			return nil, fmt.Errorf("digest: fuse: %w", ferr)
+			return res, &StageError{Stage: "fuse", Err: ferr}
 		}
 		if strings.TrimSpace(fused) == "" {
 			return nil, errors.New("digest: fuse returned empty output")
@@ -489,10 +741,16 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 	slog.InfoContext(ctx, "digest outline start")
 	outlinePath := filepath.Join(opts.ArtifactDir, "responses", "outline.md")
 	outlineText := ""
+	outlineCap := max(3, len(opts.PackedPlan.Chunks))
+	if opts.CallPlan != nil {
+		outlineCap = opts.CallPlan.SectionCap
+	}
+	outlinePrompt := ctxBlock + p.RenderOutlineCapped(opts.Style, numbered, outlineCap)
 	if opts.Resume {
-		if data, ok := readReusableArtifact(outlinePath, "outline"); ok {
+		if data, ok := readProvenancedResponse(opts, outlinePath, "outline", outlinePrompt, numbered+"\x00"+ctxBlock+"\x00"+opts.Style); ok {
 			outlineText = data
 			res.ReusedOutline = true
+			opts.Dispatcher.ReleaseMandatory(1)
 			ledger.RecordZeroDelta("outline", "", "reuse", time.Time{}, nil)
 		}
 	}
@@ -506,13 +764,20 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 		if strings.TrimSpace(outlineText) == "" {
 			started := time.Now()
 			beforeUsage := ledger.usageNow()
-			outlineText, err = retryComplete(ctx, "outline", rc.Outline, ctxBlock+p.RenderOutline(opts.Style, numbered), opts.Timeout, retries, backoff)
+			var outlineRoute Route
+			if opts.Dispatcher != nil {
+				outlineText, outlineRoute, _, err = opts.Dispatcher.CompleteValidated(ctx, "outline", outlinePrompt, opts.Timeout, func(out string) error { return validateOutline(strings.TrimSpace(out), outlineCap) })
+			} else {
+				outlineText, err = retryOutline(ctx, rc.Outline, outlinePrompt, opts.Timeout, retries, backoff, outlineCap)
+			}
 			ledger.Record("outline", "", "call", started, err, beforeUsage)
 			if err != nil {
-				return nil, fmt.Errorf("digest: outline: %w", err)
+				return res, &StageError{Stage: stageOutline, Err: err}
 			}
-		}
-		if err := writeCheckpoint(opts, "outline", outlinePath, []byte(strings.TrimSpace(outlineText))); err != nil {
+			if err := writeProvenancedResponse(opts, "outline", outlinePath, "outline", outlinePrompt, numbered+"\x00"+ctxBlock+"\x00"+opts.Style, outlineRoute, []byte(strings.TrimSpace(outlineText))); err != nil {
+				return nil, err
+			}
+		} else if err := writeCheckpoint(opts, "outline", outlinePath, []byte(strings.TrimSpace(outlineText))); err != nil {
 			return nil, err
 		}
 	}
@@ -562,11 +827,21 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 			}
 		}
 		if len(orphans) > 0 {
-			secs = append(secs, section{title: "Additional details", intent: "Remaining facts not otherwise covered above.", factIDs: orphans})
-			if opts.Cite {
-				sectionFacts = append(sectionFacts, selectFactsTagged(units, orphans))
+			if len(secs) >= outlineCap {
+				last := len(secs) - 1
+				secs[last].factIDs = append(secs[last].factIDs, orphans...)
+				if opts.Cite {
+					sectionFacts[last] += "\n\n" + selectFactsTagged(units, orphans)
+				} else {
+					sectionFacts[last] += "\n\n" + selectFacts(units, orphans)
+				}
 			} else {
-				sectionFacts = append(sectionFacts, selectFacts(units, orphans))
+				secs = append(secs, section{title: "Additional details", intent: "Remaining facts not otherwise covered above.", factIDs: orphans})
+				if opts.Cite {
+					sectionFacts = append(sectionFacts, selectFactsTagged(units, orphans))
+				} else {
+					sectionFacts = append(sectionFacts, selectFacts(units, orphans))
+				}
 			}
 			slog.WarnContext(ctx, "digest outline left facts unassigned; routed to catch-all section", "orphans", len(orphans))
 		}
@@ -579,6 +854,16 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 			}
 		}
 	}
+	if len(secs) > outlineCap {
+		return res, &StageError{Stage: stageOutline, Err: fmt.Errorf("final routed outline has %d sections, cap is %d", len(secs), outlineCap)}
+	}
+	if opts.CallPlan != nil {
+		beforeMandatory := opts.CallPlan.MandatoryCalls
+		if err := opts.CallPlan.ReleaseUnusedSections(len(secs), retries); err != nil {
+			return res, &StageError{Stage: stageOutline, Err: err}
+		}
+		opts.Dispatcher.ReleaseMandatory(beforeMandatory - opts.CallPlan.MandatoryCalls)
+	}
 
 	// expand: write each section in order. Each call sees its section's facts, the
 	// full outline, and the sections already written, but emits only one section — so
@@ -586,39 +871,31 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 	bodies := make([]string, len(secs))
 	for i, s := range secs {
 		sectionPath := filepath.Join(opts.ArtifactDir, "responses", fmt.Sprintf("section-%03d.md", i+1))
+		prior := assembleArticle(title, secs[:i], bodies[:i])
+		sectionPrompt := ctxBlock + citeSectionBlock + p.RenderSection(opts.Style, outlineText, sectionFacts[i], prior, s.title, s.intent)
+		sectionUpstream := outlineText + "\x00" + sectionFacts[i] + "\x00" + prior + "\x00" + opts.Style + "\x00" + ctxBlock + "\x00" + citeSectionBlock
 		if opts.Resume {
-			if data, ok := readReusableArtifact(sectionPath, "section"); ok {
+			if data, ok := readProvenancedResponse(opts, sectionPath, "section", sectionPrompt, sectionUpstream); ok {
 				bodies[i] = data
 				res.ReusedSections++
+				opts.Dispatcher.ReleaseMandatory(1)
 				ledger.RecordZeroDelta("section", s.title, "reuse", time.Time{}, nil)
 				slog.InfoContext(ctx, "digest section done", "section", s.title, "n", i+1, "total", len(secs))
 				continue
 			}
 		}
-		prior := assembleArticle(title, secs[:i], bodies[:i])
 		stage := fmt.Sprintf("section %d/%d: %s", i+1, len(secs), s.title)
 		slog.InfoContext(ctx, "digest section start", "section", s.title, "n", i+1, "total", len(secs))
 		started := time.Now()
 		beforeUsage := ledger.usageNow()
-		body, serr := retryComplete(ctx, stage, rc.Section, ctxBlock+citeSectionBlock+p.RenderSection(opts.Style, outlineText, sectionFacts[i], prior, s.title, s.intent), opts.Timeout, retries, backoff)
+		body, route, serr := retryRoleCompleteRoute(ctx, opts, "section", stage, rc.Section, sectionPrompt, opts.Timeout, retries, backoff)
 		ledger.Record("section", s.title, "call", started, serr, beforeUsage)
 		if serr != nil {
-			if cerr := cancellationErr(ctx, serr); cerr != nil {
-				return nil, fmt.Errorf("digest: section %q: %w", s.title, cerr)
-			}
-			if ai.IsSystemic(serr) {
-				return nil, fmt.Errorf("digest: section %q: %w", s.title, serr)
-			}
-			// Graceful degradation: a non-systemic failure after retries leaves a
-			// placeholder so the rest of the article still assembles; the gap is
-			// recorded for the caller to surface.
-			slog.WarnContext(ctx, "digest: section failed after retries, degrading", "section", s.title, "err", serr)
 			res.FailedSections = append(res.FailedSections, s.title)
-			bodies[i] = "_(this section could not be generated)_"
-			continue
+			return res, &StageError{Stage: stageSection, Unit: s.title, Err: serr}
 		}
 		bodies[i] = body
-		if err := writeCheckpoint(opts, "section draft", sectionPath, []byte(bodies[i])); err != nil {
+		if err := writeProvenancedResponse(opts, "section draft", sectionPath, "section", sectionPrompt, sectionUpstream, route, []byte(bodies[i])); err != nil {
 			return nil, err
 		}
 		slog.InfoContext(ctx, "digest section done", "section", s.title, "n", i+1, "total", len(secs))
@@ -637,10 +914,18 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 	if opts.Edit {
 		for i, s := range secs {
 			editPath := filepath.Join(opts.ArtifactDir, "responses", fmt.Sprintf("section-%03d.edited.md", i+1))
+			editFacts := facts
+			if opts.Cite {
+				editFacts = numbered
+			}
+			priorEdited := assembleArticle(title, secs[:i], bodies[:i])
+			editPrompt := ctxBlock + citeEditBlock + p.RenderEditSection(opts.Style, draft, priorEdited, editFacts, s.title)
+			editUpstream := draft + "\x00" + priorEdited + "\x00" + editFacts + "\x00" + opts.Style + "\x00" + ctxBlock + "\x00" + citeEditBlock
 			if opts.Resume {
-				if data, ok := readReusableArtifact(editPath, "edit"); ok {
+				if data, ok := readProvenancedResponse(opts, editPath, "edit", editPrompt, editUpstream); ok {
 					bodies[i] = data
 					res.ReusedEdits++
+					opts.Dispatcher.ReleaseMandatory(1)
 					ledger.RecordZeroDelta("edit", s.title, "reuse", time.Time{}, nil)
 					slog.InfoContext(ctx, "digest edit done", "section", s.title, "n", i+1, "total", len(secs))
 					continue
@@ -650,28 +935,14 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 			slog.InfoContext(ctx, "digest edit start", "section", s.title, "n", i+1, "total", len(secs))
 			started := time.Now()
 			beforeUsage := ledger.usageNow()
-			editFacts := facts
-			if opts.Cite {
-				editFacts = numbered
-			}
-			priorEdited := assembleArticle(title, secs[:i], bodies[:i])
-			edited, eerr := retryComplete(ctx, stage, rc.Edit, ctxBlock+citeEditBlock+p.RenderEditSection(opts.Style, draft, priorEdited, editFacts, s.title), opts.Timeout, retries, backoff)
+			edited, route, eerr := retryRoleCompleteRoute(ctx, opts, "edit", stage, rc.Edit, editPrompt, opts.Timeout, retries, backoff)
 			ledger.Record("edit", s.title, "call", started, eerr, beforeUsage)
 			if eerr != nil {
-				if cerr := cancellationErr(ctx, eerr); cerr != nil {
-					return nil, fmt.Errorf("digest: edit section %q: %w", s.title, cerr)
-				}
-				if ai.IsSystemic(eerr) {
-					return nil, fmt.Errorf("digest: edit section %q: %w", s.title, eerr)
-				}
-				// Recovery: keep the un-edited draft body for this section (already
-				// in bodies[i]); a failed polish must not discard a written section.
-				slog.WarnContext(ctx, "digest: edit failed after retries, keeping draft", "section", s.title, "err", eerr)
 				res.FailedEdits = append(res.FailedEdits, s.title)
-				continue
+				return res, &StageError{Stage: "edit", Unit: s.title, Err: eerr}
 			}
 			bodies[i] = edited
-			if err := writeCheckpoint(opts, "section edit", editPath, []byte(bodies[i])); err != nil {
+			if err := writeProvenancedResponse(opts, "section edit", editPath, "edit", editPrompt, editUpstream, route, []byte(bodies[i])); err != nil {
 				return nil, err
 			}
 			slog.InfoContext(ctx, "digest edit done", "section", s.title, "n", i+1, "total", len(secs))
@@ -697,6 +968,7 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 			cited, citations, rerr = repairMissingCited(repairInput{
 				ctx: ctx, llm: rc.Edit, prompts: p, ledger: ledger,
 				timeout: opts.Timeout, attempts: retries, backoff: backoff,
+				dispatch: opts.Dispatcher,
 			}, units, cited, citations)
 			if rerr != nil {
 				return nil, fmt.Errorf("digest: citation repair: %w", rerr)
@@ -730,6 +1002,7 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 		final, res.Coverage, rerr = repairMissing(repairInput{
 			ctx: ctx, llm: rc.Edit, prompts: p, ledger: ledger,
 			timeout: opts.Timeout, attempts: retries, backoff: backoff,
+			dispatch: opts.Dispatcher,
 		}, coverageBase, final, res.Coverage)
 		if rerr != nil {
 			return nil, fmt.Errorf("digest: coverage repair: %w", rerr)
@@ -752,7 +1025,7 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 			if opts.Cite {
 				sentences = citedSentencesForPrecision(citedForPrecision)
 			}
-			precision, perr := checkPrecision(ctx, rc.Judge, p, facts, sentences, opts.PrecisionBatchSize, ledger, opts.Timeout, retries, backoff)
+			precision, perr := checkPrecisionDispatched(ctx, rc.Judge, p, facts, sentences, opts.PrecisionBatchSize, ledger, opts.Dispatcher, opts.Timeout, retries, backoff)
 			if perr != nil {
 				if ai.IsSystemic(perr) {
 					return nil, fmt.Errorf("digest: precision: %w", perr)
@@ -768,7 +1041,7 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 					if opts.Cite {
 						repairArticle = citedForPrecision
 					}
-					repaired, repairedCov, rerr := repairPrecision(ctx, rc.Judge, p, facts, precision.Unsupported, repairArticle, coverageBase, res.Coverage, ledger, opts.Timeout, retries, backoff)
+					repaired, repairedCov, rerr := repairPrecisionDispatched(ctx, rc.Judge, p, facts, precision.Unsupported, repairArticle, coverageBase, res.Coverage, ledger, opts.Dispatcher, opts.Timeout, retries, backoff)
 					if rerr != nil && ai.IsSystemic(rerr) {
 						return nil, fmt.Errorf("digest: precision repair: %w", rerr)
 					}
@@ -777,7 +1050,7 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 						if opts.Cite {
 							repairSentences = citedSentencesForPrecision(repaired)
 						}
-						repairedPrecision, rperr := checkPrecision(ctx, rc.Judge, p, facts, repairSentences, opts.PrecisionBatchSize, ledger, opts.Timeout, retries, backoff)
+						repairedPrecision, rperr := checkPrecisionDispatched(ctx, rc.Judge, p, facts, repairSentences, opts.PrecisionBatchSize, ledger, opts.Dispatcher, opts.Timeout, retries, backoff)
 						if rperr != nil {
 							if ai.IsSystemic(rperr) {
 								return nil, fmt.Errorf("digest: precision re-check: %w", rperr)
@@ -838,11 +1111,16 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 		final += b.String()
 	}
 
-	if err := writeCheckpoint(opts, "final output", opts.OutPath, []byte(final)); err != nil {
+	if opts.FinalGate != nil {
+		if err := opts.FinalGate(res); err != nil {
+			return res, &StageError{Stage: stageQualityGate, Err: err}
+		}
+	}
+	if err := ledger.Err(); err != nil {
 		return nil, err
 	}
-	if err := writeCheckpoint(opts, "final artifact", filepath.Join(opts.ArtifactDir, "responses", "rewrite.md"), []byte(final)); err != nil {
-		return nil, fmt.Errorf("digest: final artifact copy failed; durable --out survives at %q: %w", opts.OutPath, err)
+	if err := publishFinal(opts, []byte(final)); err != nil {
+		return res, err
 	}
 	if shouldStoreArticle(opts, res) {
 		opts.Cache.Store(opts.CacheKey, final, CacheMeta{Coverage: res.Coverage, Citations: res.Citations, Precision: res.Precision, Words: res.Words})
@@ -911,7 +1189,7 @@ func artifactReusable(stage, data string) bool {
 	case strings.Contains(norm, "empty response"):
 		return false
 	}
-	if stage == "outline" {
+	if stage == stageOutline {
 		_, secs := parseOutline(trimmed)
 		return len(secs) > 0
 	}
@@ -930,7 +1208,7 @@ func ArtifactReusableForResume(stage, data string) bool {
 // with chunk counts and writing the checkpoint).
 func resolveFacts(ctx context.Context, llm, escalation Completer, p *prompts.Set, in resolveFactsInput) (string, error) {
 	within := pathWithin(in.opts.ArtifactDir, in.opts.FactsPath)
-	if in.opts.ReuseFacts || (in.opts.Resume && within) {
+	if in.opts.ReuseFacts || (in.opts.Resume && within && in.opts.ProvenanceParameters == nil) { //nolint:nestif // Reuse needs all three independent safety conditions.
 		data, ok := readReusableArtifact(in.opts.FactsPath, "facts")
 		if ok {
 			in.result.ReusedFacts = true
@@ -964,21 +1242,22 @@ func resolveFacts(ctx context.Context, llm, escalation Completer, p *prompts.Set
 	return ex.facts, nil
 }
 
-// extractAndCompile chunks source, extracts facts per chunk with bounded
-// parallelism, and assembles the compiled-facts document in chunk order. A hard
-// LLM error on any chunk cancels the group and aborts; an empty response is a soft
-// skip recorded by id. Chunk artifacts are written sequentially up front so an IO
-// error surfaces before any LLM work.
+// researchAndCompile extracts packed chunks with bounded parallelism and
+// assembles facts in source order. Any exhausted mandatory response cancels
+// admission and aborts; source chunks are checkpointed before provider work.
 func researchAndCompile(ctx context.Context, llm, escalation Completer, p *prompts.Set, source string, opts Options, ledger *runLedger) (extraction, error) {
-	chunks, err := ChunkSource(source, opts.ChunkSize, opts.MaxTokens)
-	if err != nil {
-		return extraction{}, err
+	if opts.PackedPlan == nil {
+		return extraction{}, errors.New("digest: missing packed source plan")
 	}
+	chunks := opts.PackedPlan.Chunks
 	total := len(chunks)
+	if total == 0 {
+		return extraction{}, errors.New("digest: source produced no research chunks")
+	}
 	slog.InfoContext(ctx, "digest chunking done", "chunks", total)
 
-	for i, chunk := range chunks {
-		id := fmt.Sprintf("chunk-%03d", i+1)
+	for _, chunk := range chunks {
+		id := chunk.ID
 		if werr := writeCheckpoint(opts, "source chunk", filepath.Join(opts.ArtifactDir, "chunks", id+".md"), []byte(chunk.Text)); werr != nil {
 			return extraction{}, werr
 		}
@@ -1009,24 +1288,45 @@ func researchAndCompile(ctx context.Context, llm, escalation Completer, p *promp
 	failedFlag := make([]bool, total)
 	reusedFlag := make([]bool, total)
 
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(limit)
+	gctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	var firstErr error
+	var firstErrMu sync.Mutex
+	setErr := func(err error) {
+		firstErrMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+		firstErrMu.Unlock()
+	}
 	phaseStart := time.Now()
 	phaseBefore := ledger.usageNow()
-	for i, chunk := range chunks {
-		id := fmt.Sprintf("chunk-%03d", i+1)
-		g.Go(func() error {
+	worker := func() {
+		defer workers.Done()
+		for i := range jobs {
+			if gctx.Err() != nil {
+				return
+			}
+			chunk := chunks[i]
+			id := chunk.ID
 			responsePath := filepath.Join(opts.ArtifactDir, "responses", id+".md")
+			prompt := headerBlock + p.RenderResearch(id, SourceLabel(chunk.SourceOrdinal)+"\n\n"+chunk.Text)
+			upstream := headerBlock + "\x00" + chunk.Hash
 			if opts.Resume {
-				if data, ok := readReusableArtifact(responsePath, "research"); ok {
+				if data, ok := readProvenancedResponse(opts, responsePath, "research", prompt, upstream); ok {
 					outs[i] = strings.TrimSpace(data)
 					if werr := writeCheckpoint(opts, "resumed research response", responsePath, []byte(outs[i])); werr != nil {
-						return werr
+						setErr(werr)
+						return
 					}
 					reusedFlag[i] = true
+					opts.Dispatcher.ReleaseMandatory(1)
 					ledger.RecordZeroDelta("research", id, "reuse", time.Time{}, nil)
 					slog.InfoContext(gctx, "digest research done", "chunk", id, "n", i+1, "total", total)
-					return nil
+					continue
 				}
 			}
 			if opts.ResearchCache != nil {
@@ -1034,54 +1334,65 @@ func researchAndCompile(ctx context.Context, llm, escalation Completer, p *promp
 				if data, ok := opts.ResearchCache.Load(cacheText); ok {
 					outs[i] = strings.TrimSpace(data)
 					reusedFlag[i] = true
+					opts.Dispatcher.ReleaseMandatory(1)
 					if werr := writeCheckpoint(opts, "cached research response", responsePath, []byte(outs[i])); werr != nil {
-						return werr
+						setErr(werr)
+						return
 					}
 					ledger.RecordZeroDelta("research", id, "cache", time.Time{}, nil)
 					slog.InfoContext(gctx, "digest research cache hit", "chunk", id, "n", i+1, "total", total)
-					return nil
+					continue
 				}
 			}
 			slog.InfoContext(gctx, "digest research", "chunk", id, "n", i+1, "total", total)
 			started := time.Now()
-			out, cerr := complete(gctx, llm, headerBlock+p.RenderResearch(id, chunk.Text), opts.Timeout)
+			out, route, cerr := retryRoleCompleteRoute(gctx, opts, "research", "research", llm, prompt, opts.Timeout, retries, backoff)
 			// Tokens for concurrent research calls are accounted once at phase
 			// scope (overlapping per-call windows would double-count).
 			ledger.RecordZeroDelta("research", id, "call", started, cerr)
 			if cerr != nil {
-				// An empty model response is a soft skip (recorded in failed),
-				// not a run-ending error: one chunk the model declines to
-				// answer must not abort the whole digest. Any other error
-				// (timeout, transport, cancellation) still fails fast.
-				if errors.Is(cerr, ai.ErrEmptyResponse) {
-					failedFlag[i] = true
-					return nil
-				}
-				return fmt.Errorf("digest: research %s: %w", id, cerr)
-			}
-			if strings.TrimSpace(out) == "" {
-				failedFlag[i] = true
-				return nil
+				setErr(fmt.Errorf("digest: research %s: %w", id, cerr))
+				return
 			}
 			out, cerr = maybeEscalateResearch(researchEscalationInput{
 				ctx: gctx, llm: escalation, prompts: p, headerBlock: headerBlock,
 				id: id, chunkText: chunk.Text, baseOut: out, options: opts, ledger: ledger,
 			})
 			if cerr != nil {
-				return fmt.Errorf("digest: research escalation %s: %w", id, cerr)
+				setErr(fmt.Errorf("digest: research escalation %s: %w", id, cerr))
+				return
 			}
-			if werr := writeCheckpoint(opts, "research response", responsePath, []byte(out)); werr != nil {
-				return werr
+			if werr := writeProvenancedResponse(opts, "research response", responsePath, "research", prompt, upstream, route, []byte(out)); werr != nil {
+				setErr(werr)
+				return
 			}
 			if opts.ResearchCache != nil {
 				opts.ResearchCache.Store(researchCacheText(headerBlock, chunk.Text), out)
 			}
 			outs[i] = strings.TrimSpace(out)
 			slog.InfoContext(gctx, "digest research done", "chunk", id, "n", i+1, "total", total)
-			return nil
-		})
+		}
 	}
-	werr := g.Wait()
+	workers.Add(limit)
+	for range limit {
+		go worker()
+	}
+dispatchJobs:
+	for i := range chunks {
+		select {
+		case <-gctx.Done():
+			break dispatchJobs
+		case jobs <- i:
+		}
+		if gctx.Err() != nil {
+			break dispatchJobs
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	firstErrMu.Lock()
+	werr := firstErr
+	firstErrMu.Unlock()
 	ledger.Record("research", "", "phase", phaseStart, werr, phaseBefore)
 	if werr != nil {
 		return extraction{}, werr
@@ -1117,7 +1428,7 @@ func maybeEscalateResearch(in researchEscalationInput) (string, error) {
 		return baseOut, nil
 	}
 	started := time.Now()
-	out, err := complete(ctx, llm, headerBlock+p.RenderResearch(id, chunkText), opts.Timeout)
+	out, err := retryRoleComplete(ctx, opts, "research-escalation", "research escalation", llm, headerBlock+p.RenderResearch(id, chunkText), opts.Timeout, opts.Retries, opts.RetryDelay)
 	if ledger != nil {
 		ledger.RecordZeroDelta("research", id, "escalate", started, err)
 	}
@@ -1137,15 +1448,19 @@ func maybeEscalateResearch(in researchEscalationInput) (string, error) {
 
 func resolveDocHeader(ctx context.Context, llm Completer, p *prompts.Set, source, excerpt string, opts Options, ledger *runLedger, retries int, backoff time.Duration) (string, error) {
 	headerPath := filepath.Join(opts.ArtifactDir, "responses", "doc-context.md")
+	skeleton := headingSkeleton(source, 100)
+	prompt := p.RenderDocContext(excerpt, skeleton)
+	upstream := excerpt + "\x00" + skeleton
 	if opts.Resume {
-		if data, ok := readReusableArtifact(headerPath, "doc-context"); ok {
+		if data, ok := readProvenancedResponse(opts, headerPath, "doc-context", prompt, upstream); ok {
+			opts.Dispatcher.ReleaseMandatory(1)
 			ledger.RecordZeroDelta("doc-context", "", "reuse", time.Time{}, nil)
 			return strings.TrimSpace(data), nil
 		}
 	}
 	started := time.Now()
 	beforeUsage := ledger.usageNow()
-	header, err := retryComplete(ctx, "doc-context", llm, p.RenderDocContext(excerpt, headingSkeleton(source, 100)), opts.Timeout, retries, backoff)
+	header, route, err := retryRoleCompleteRoute(ctx, opts, "doc-context", "doc-context", llm, prompt, opts.Timeout, retries, backoff)
 	ledger.Record("doc-context", "", "call", started, err, beforeUsage)
 	if err != nil {
 		return "", fmt.Errorf("digest: doc-context: %w", err)
@@ -1154,7 +1469,7 @@ func resolveDocHeader(ctx context.Context, llm Completer, p *prompts.Set, source
 	if header == "" {
 		return "", errors.New("digest: doc-context returned empty output")
 	}
-	if err := writeCheckpoint(opts, "document context", headerPath, []byte(header)); err != nil {
+	if err := writeProvenancedResponse(opts, "document context", headerPath, "doc-context", prompt, upstream, route, []byte(header)); err != nil {
 		return "", err
 	}
 	return header, nil

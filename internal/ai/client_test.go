@@ -193,6 +193,23 @@ func TestRequestBudgetPreventsTextSend(t *testing.T) {
 	}
 }
 
+func TestRetryClassificationExcludesCallerAndBudgetFailures(t *testing.T) {
+	if !IsRetryable(ErrEmptyResponse) {
+		t.Fatal("empty response should be retryable")
+	}
+	for _, err := range []error{context.Canceled, ErrRequestBudgetExhausted} {
+		if IsRetryable(err) {
+			t.Fatalf("%v should not be retryable", err)
+		}
+	}
+	if got := ErrorClass(context.Canceled); got != "canceled" {
+		t.Fatalf("ErrorClass(canceled) = %q", got)
+	}
+	if got := ErrorClass(ErrRequestBudgetExhausted); got != "budget" {
+		t.Fatalf("ErrorClass(budget) = %q", got)
+	}
+}
+
 func TestDeepSeekDisablesThinkingByDefault(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

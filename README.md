@@ -198,16 +198,18 @@ quality gates using existing `digest` flags. Cascade requires an explicit
 
 Outputs: the final article (`--out`, default `<source>.distilled.md`), the
 `facts.compiled.md` checkpoint, the fused notes (`facts.fused.md`, only when
-`--fuse` is enabled), the stage-level `run-ledger.jsonl` call/reuse ledger, and
-per-chunk artifacts (`chunks/`, `responses/`, including the writer's `draft.md`)
-under the artifacts directory. The research, fuse, write, and editor prompts live in
+`--fuse` is enabled), the versioned `run-ledger.jsonl`, an atomic
+`run-summary.json`, and provenance-bound per-chunk artifacts (`chunks/`,
+`responses/`, including the writer's `draft.md`) under the artifacts directory.
+The durable output and `responses/rewrite.md` are published only after every
+mandatory stage succeeds. The research, fuse, write, and editor prompts live in
 `~/.config/distill/prompts/` and are created on first run — edit them to tune behavior.
 
 #### digest flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `$DISTILL_MODEL` | Pins every text role, including precision judge and cascade escalation; otherwise per-role config selects stages (default `z-ai/glm-5.2`) |
+| `--model` | `$DISTILL_MODEL` | Pins every text role and disables cross-provider fallback; otherwise per-role config selects stages (default `z-ai/glm-5.2`) |
 | `--base-url` | local profile only | Local OpenAI-compatible endpoint when `--local` is set; remote custom endpoints are disabled |
 | `--local` | — | Use the on-box Qwen profile (`local_*` config keys) instead of the OpenRouter default |
 | `--deepseek` | — | Force the direct DeepSeek profile (`deepseek_*` config keys) with `$DEEPSEEK_API_KEY` |
@@ -216,17 +218,17 @@ under the artifacts directory. The research, fuse, write, and editor prompts liv
 | `--context-file` | — | Read steering context from a file (mutually exclusive with `--context`) |
 | `--out` | `<source>.distilled.md` | Final article output path |
 | `--facts` | `<artifacts>/facts.compiled.md` | Compiled-facts checkpoint path |
-| `--artifacts` | temp dir | Absent/new, empty, or exact source-marker-bound directory only; non-empty unbound or mismatched directories are refused without mutation |
+| `--artifacts` | temp dir | Absent/new, empty, or exact schema-v2 provenance-bound directory only; v1, unbound, or mismatched directories are preserved and refused |
 | `--chunk-size` | `6000` | Character budget per chunk (min 1000) |
 | `--max-tokens` | `4000` | `cl100k_base` preflight budget per chunk for remote profiles; local Qwen uses the character budget (`0` disables) |
 | `--concurrency` | `4` | Max parallel chunk extractions |
 | `--no-clean` / `--clean` | auto | Skip / force transcript (VTT/SRT) cleaning before distillation |
 | `--timeout` | `300` | Per-LLM-call timeout in seconds |
-| `--retries` | config, else `3` | Per-call retry attempts for outline/section/edit on transient errors |
-| `--dry-run` | `false` | Validate artifact ownership and plan chunks, role models, endpoints, and paths without making provider calls or creating an absent artifact directory |
-| `--max-calls` | `0` | Hard aggregate text-plus-embedding request ceiling (`0` unlimited); plan is advisory and finite runs report actual `request budget: used/limit` |
+| `--retries` | config, else `3` | Maximum primary attempts per logical digest call, including the first; only transient/rate-limit/timeout/empty failures retry |
+| `--dry-run` | `false` | Validate and display the exact packed call plan, routing, recovery availability, and paths with zero provider calls and no absent artifact-directory creation |
+| `--max-calls` | `0` | Authoritative mandatory-call preflight gate and hard runtime provider-call ceiling (`0` unlimited); recovery cannot consume later mandatory reservations. Finite planning refuses dynamically sized merge, target-facts, and precision work. |
 | `--reuse-facts` | `false` | Reuse the facts checkpoint (skip research) |
-| `--resume` | `true` | Reuse complete artifacts from `--artifacts` to avoid repeated paid calls after an interrupted run; pass `--resume=false` to force regeneration |
+| `--resume` | `true` | Reuse only schema-v2 checkpoints whose response sidecars match source, prompt, upstream input, route, parameters, policy, and stage |
 | `--fuse` | `false` | Run the fuse stage that merges per-chunk notes before writing (off by default; can time out on large inputs) |
 | `--merge-facts` | `false` | Cluster and merge similar extracted fact bullets before planning; near-duplicates with explicit fact markers merge only when source fact IDs remain represented |
 | `--outline-from-clusters` | `false` | Build the outline from merged fact clusters instead of a free-form outline call (requires `--merge-facts`) |

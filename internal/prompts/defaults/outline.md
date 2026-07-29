@@ -11,7 +11,7 @@ Output format — Markdown, and nothing else:
   - a line `Facts: F1, F3, F7` listing the IDs of the facts that belong to that section.
 
 Assign every fact ID to exactly one section — do not drop any, and do not put the same fact in two sections. Order the sections so the article reads in a natural flow. Use as many sections as the material needs (roughly 5–15 for a long source, fewer for a short one) — each section should be small enough to write on its own.
-Prefer 6-10 sections. Fold semantically overlapping topics into one section instead of creating near-duplicate sections.
+Prefer 6-10 sections. Fold semantically overlapping topics into one section instead of creating near-duplicate sections. You must produce no more than {{MAX_SECTIONS}} sections.
 
 Researchers' notes:
 {{FACTS}}

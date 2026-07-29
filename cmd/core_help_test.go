@@ -30,10 +30,10 @@ func TestCoreCommandHelpPreservesCobraProse(t *testing.T) {
 		{[]string{"digest", "--help"}, []string{
 			"Distill a long document into a cohesive rewrite without any single model",
 			"Hard Claude token ceiling per chunk; oversize character chunks are split (0 disables)",
-			"Reuse complete artifacts from a previous run in --artifacts to avoid repeated paid calls",
-			"absent, empty, or exactly source-marker-bound only",
-			"Pin every text role, including precision judge and cascade escalation",
-			"Hard aggregate text-plus-embedding request ceiling",
+			"Reuse only provenance-verified schema-v2 checkpoints",
+			"Version 1 artifact directories are left untouched",
+			"pins every text role and disables fallback",
+			"Authoritative digest preflight and runtime provider-call ceiling",
 			"score    Deterministic review of digest drafts (no LLM)",
 		}},
 	}

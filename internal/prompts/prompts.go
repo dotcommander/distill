@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/dotcommander/distill/internal/fsutil"
@@ -335,7 +336,17 @@ func (s *Set) RenderFuse(notes string) string {
 
 // RenderOutline fills the outline template with the target style and the facts.
 func (s *Set) RenderOutline(style, facts string) string {
-	return strings.NewReplacer("{{STYLE}}", style, "{{FACTS}}", facts).Replace(s.Outline)
+	return s.RenderOutlineCapped(style, facts, 0)
+}
+
+// RenderOutlineCapped renders the normal outline prompt with a hard section
+// limit. A zero cap preserves compatibility with custom legacy templates.
+func (s *Set) RenderOutlineCapped(style, facts string, maxSections int) string {
+	cap := ""
+	if maxSections > 0 {
+		cap = strconv.Itoa(maxSections)
+	}
+	return strings.NewReplacer("{{STYLE}}", style, "{{FACTS}}", facts, "{{MAX_SECTIONS}}", cap).Replace(s.Outline)
 }
 
 // RenderSection fills the section-writer template: target style, the full outline,

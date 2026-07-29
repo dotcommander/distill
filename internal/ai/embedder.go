@@ -23,7 +23,7 @@ func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float32, e
 			end = len(texts)
 		}
 		batch := texts[start:end]
-		if err := c.requestBudget.Acquire("embedding"); err != nil {
+		if err := c.requestBudget.AcquireContext(ctx, "embedding"); err != nil {
 			return nil, err
 		}
 		resp, err := c.wh.Embeddings().Model(c.embeddingModel).Input(batch...).Generate(ctx)

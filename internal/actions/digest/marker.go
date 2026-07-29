@@ -1,12 +1,11 @@
 package digest
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/dotcommander/distill/internal/fsutil"
@@ -21,27 +20,62 @@ const markerName = "source.json"
 
 // markerVersion is bumped if the marker layout or binding semantics change;
 // struct equality then fails and old artifacts regenerate.
-const markerVersion = 1
+const markerVersion = 2
 
 // runMarker binds an artifact directory to the exact inputs that determine
 // chunk identity: the post-clean source bytes and the chunk geometry. Chunking
 // is deterministic, so a matching marker guarantees index-based artifact reuse
 // refers to identical chunks.
 type runMarker struct {
-	Version      int    `json:"version"`
-	SourceSHA256 string `json:"source_sha256"`
-	ChunkSize    int    `json:"chunk_size"`
-	MaxTokens    int    `json:"max_tokens"`
+	Version               int            `json:"version"`
+	Sources               []markerSource `json:"sources"`
+	Chunks                []markerChunk  `json:"chunks"`
+	ChunkSize             int            `json:"chunk_size"`
+	MaxTokens             int            `json:"max_tokens"`
+	NormalizationVersion  string         `json:"normalization_version"`
+	ChunkAlgorithmVersion string         `json:"chunk_algorithm_version"`
+}
+
+type markerSource struct {
+	Ordinal int    `json:"ordinal"`
+	SHA256  string `json:"sha256"`
+}
+
+type markerChunk struct {
+	ID            string `json:"id"`
+	SourceOrdinal int    `json:"source_ordinal"`
+	SHA256        string `json:"sha256"`
+	Characters    int    `json:"characters"`
+	Tokens        int    `json:"tokens"`
 }
 
 func markerFor(source string, chunkSize, maxTokens int) runMarker {
-	sum := sha256.Sum256([]byte(source))
-	return runMarker{
-		Version:      markerVersion,
-		SourceSHA256: hex.EncodeToString(sum[:]),
-		ChunkSize:    chunkSize,
-		MaxTokens:    maxTokens,
+	plan, err := PlanPackedSources([]SourcePart{{Ordinal: 1, Text: source}}, chunkSize, maxTokens)
+	if err != nil {
+		// This legacy helper is retained for tests and only accepts arguments
+		// already validated at the public boundary.
+		return runMarker{Version: markerVersion, ChunkSize: chunkSize, MaxTokens: maxTokens}
 	}
+	return markerForPlan(plan)
+}
+
+func markerForPlan(plan PackedPlan) runMarker {
+	m := runMarker{
+		Version:               markerVersion,
+		ChunkSize:             plan.ChunkSize,
+		MaxTokens:             plan.MaxTokens,
+		NormalizationVersion:  plan.NormalizationVersion,
+		ChunkAlgorithmVersion: plan.ChunkAlgorithmVersion,
+		Sources:               make([]markerSource, len(plan.Sources)),
+		Chunks:                make([]markerChunk, len(plan.Chunks)),
+	}
+	for i, source := range plan.Sources {
+		m.Sources[i] = markerSource{Ordinal: source.Ordinal, SHA256: source.Hash}
+	}
+	for i, chunk := range plan.Chunks {
+		m.Chunks[i] = markerChunk{ID: chunk.ID, SourceOrdinal: chunk.SourceOrdinal, SHA256: chunk.Hash, Characters: chunk.Characters, Tokens: chunk.Tokens}
+	}
+	return m
 }
 
 func writeRunMarker(dir string, m runMarker) error {
@@ -102,6 +136,13 @@ func ArtifactsMatchSource(artifactDir, source string, chunkSize, maxTokens int) 
 	return err == nil && reuseOK
 }
 
+// ArtifactsMatchPlan is the structured-source equivalent of
+// ArtifactsMatchSource. It is read-only and rejects all v1 directories.
+func ArtifactsMatchPlan(artifactDir string, plan PackedPlan) bool {
+	reuseOK, err := ValidateArtifactBindingPlan(artifactDir, plan)
+	return err == nil && reuseOK
+}
+
 // pathWithin reports whether path lies inside dir (or equals it) after both
 // are made absolute and cleaned. Empty arguments report false.
 func pathWithin(dir, path string) bool {
@@ -135,10 +176,20 @@ const (
 // It never creates, removes, or changes the artifact directory. An absent or
 // empty directory is valid for a new run but has no reusable artifacts.
 func ValidateArtifactBinding(artifactDir, source string, chunkSize, maxTokens int) (reuseOK bool, err error) {
+	plan, err := PlanPackedSources([]SourcePart{{Ordinal: 1, Text: source}}, chunkSize, maxTokens)
+	if err != nil {
+		return false, err
+	}
+	return ValidateArtifactBindingPlan(artifactDir, plan)
+}
+
+// ValidateArtifactBindingPlan reports whether the artifact directory belongs to
+// this exact ordered structured-source plan. It never creates files.
+func ValidateArtifactBindingPlan(artifactDir string, plan PackedPlan) (reuseOK bool, err error) {
 	if artifactDir == "" {
 		return false, nil
 	}
-	state, err := classifyArtifactBinding(artifactDir, markerFor(source, chunkSize, maxTokens))
+	state, err := classifyArtifactBinding(artifactDir, markerForPlan(plan))
 	if err != nil {
 		return false, err
 	}
@@ -150,10 +201,21 @@ func ValidateArtifactBinding(artifactDir, source string, chunkSize, maxTokens in
 // directories must already have an exact matching marker; they are never
 // modified on an invalid binding.
 func PrepareArtifactBinding(artifactDir, source string, chunkSize, maxTokens int) (reuseOK bool, err error) {
+	plan, err := PlanPackedSources([]SourcePart{{Ordinal: 1, Text: source}}, chunkSize, maxTokens)
+	if err != nil {
+		return false, err
+	}
+	return PrepareArtifactBindingPlan(artifactDir, plan)
+}
+
+// PrepareArtifactBindingPlan validates then atomically binds a new/empty
+// directory to plan. Existing schema v1 directories are intentionally left
+// untouched and require a fresh --artifacts path.
+func PrepareArtifactBindingPlan(artifactDir string, plan PackedPlan) (reuseOK bool, err error) {
 	if artifactDir == "" {
 		return false, nil
 	}
-	want := markerFor(source, chunkSize, maxTokens)
+	want := markerForPlan(plan)
 	state, err := classifyArtifactBinding(artifactDir, want)
 	if err != nil {
 		return false, err
@@ -214,7 +276,13 @@ func classifyArtifactBinding(artifactDir string, want runMarker) (artifactBindin
 	if err := json.Unmarshal(data, &got); err != nil {
 		return 0, invalidArtifactBinding(artifactDir, "corrupt")
 	}
-	if got != want {
+	if got.Version == 1 {
+		return 0, fmt.Errorf("digest: artifacts %q: source marker schema v1 is incompatible; use a fresh artifact directory", artifactDir)
+	}
+	if got.Version != markerVersion {
+		return 0, invalidArtifactBinding(artifactDir, "version mismatch")
+	}
+	if !reflect.DeepEqual(got, want) {
 		return 0, invalidArtifactBinding(artifactDir, "mismatch")
 	}
 	return artifactBindingMatch, nil

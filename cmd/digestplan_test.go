@@ -109,14 +109,36 @@ func TestRunDigestDryRunPrintsFiniteRequestBudget(t *testing.T) {
 		model:     "test-model",
 		artifacts: filepath.Join(dir, "artifacts"),
 		chunkSize: 1000,
-		maxCalls:  1,
+		maxCalls:  8,
 		dryRun:    true,
 	})
 	if err != nil {
 		t.Fatalf("runDigest dry-run: %v", err)
 	}
-	if got := stderr.String(); !strings.Contains(got, "request budget: 0/1") {
+	if got := stderr.String(); !strings.Contains(got, "request budget: 0/8") ||
+		!strings.Contains(got, "mandatory=8") {
 		t.Fatalf("stderr missing finite summary: %q", got)
+	}
+}
+
+func TestRunDigestPreflightRejectsBeforeArtifactCreation(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# Source\n\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifactDir := filepath.Join(dir, "must-stay-absent")
+	err := runDigest(&runContext{ctx: context.Background(), in: strings.NewReader(""), out: io.Discard, errOut: io.Discard}, []string{sourcePath}, &digestFlags{
+		model:     "test-model",
+		artifacts: artifactDir,
+		chunkSize: 1000,
+		maxCalls:  7,
+	})
+	if err == nil || !strings.Contains(err.Error(), "mandatory call plan 8") {
+		t.Fatalf("runDigest error = %v, want authoritative preflight rejection", err)
+	}
+	if _, statErr := os.Stat(artifactDir); !os.IsNotExist(statErr) {
+		t.Fatalf("preflight rejection created artifacts: %v", statErr)
 	}
 }
 

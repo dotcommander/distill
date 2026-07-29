@@ -44,6 +44,50 @@ func IsSystemic(err error) bool {
 	return false
 }
 
+// IsRetryable reports whether Distill may repeat the same logical completion.
+// It intentionally excludes authentication, quota, configuration, caller
+// cancellation, request-budget, and ambiguous network failures. Provider
+// libraries may wrap these errors; Wormhole's classifier remains authoritative.
+func IsRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrEmptyResponse) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, ErrRequestBudgetExhausted) {
+		return false
+	}
+	switch types.ClassifyError(err) {
+	case types.ErrorClassTransient, types.ErrorClassRateLimit, types.ErrorClassTimeout:
+		return true
+	case types.ErrorClassQuota, types.ErrorClassAuth, types.ErrorClassConfig, types.ErrorClassNetwork, types.ErrorClassUnknown:
+		return false
+	}
+	return false
+}
+
+// ErrorClass returns the stable, non-sensitive provider error class used by
+// digest ledgers and summaries. Raw response bodies and URLs must not be
+// persisted as observability metadata.
+func ErrorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, ErrEmptyResponse):
+		return "empty_response"
+	case errors.Is(err, ErrRequestBudgetExhausted):
+		return "budget"
+	default:
+		return string(types.ClassifyError(err))
+	}
+}
+
 // Config configures the wormhole-backed AI client. Provider selects a built-in
 // Wormhole provider; BaseURL is used only by named OpenAI-compatible providers
 // and local endpoints. TextModel and EmbeddingModel select the model per
@@ -291,7 +335,7 @@ func (c *Client) CompleteWithTemperature(ctx context.Context, prompt string, tem
 	if providerOptions != nil {
 		req = req.ProviderOptions(providerOptions)
 	}
-	if err := c.requestBudget.Acquire("text"); err != nil {
+	if err := c.requestBudget.AcquireContext(ctx, "text"); err != nil {
 		return "", err
 	}
 	resp, err := req.Generate(ctx)

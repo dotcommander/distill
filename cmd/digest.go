@@ -135,7 +135,12 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 		return err
 	}
 	filePath := input.Source
-	text := maybeCleanTranscript(cmd.Context(), maybeStripBinary(cmd.Context(), normalizeInput(input.Text)), f.forceClean, f.noClean)
+	parts := make([]digest.SourcePart, len(input.Parts))
+	for i, part := range input.Parts {
+		cleaned := maybeCleanTranscript(cmd.Context(), maybeStripBinary(cmd.Context(), normalizeInput(part.Text)), f.forceClean, f.noClean)
+		parts[i] = digest.SourcePart{Ordinal: i + 1, Text: cleaned}
+	}
+	text := joinDigestSourceParts(parts)
 	steerContext, err := resolveDigestContext(f.context, f.contextFile)
 	if err != nil {
 		return err
@@ -151,10 +156,7 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 		sourceID = "pathspec:" + hex.EncodeToString(sum[:12])
 	}
 
-	artifactDir, err := resolveDigestArtifactDir(f.artifacts, f.dryRun)
-	if err != nil {
-		return err
-	}
+	artifactDir := resolveDigestArtifactDir(f.artifacts, f.dryRun)
 	factsPath := f.facts
 	if factsPath == "" {
 		factsPath = filepath.Join(artifactDir, "facts.compiled.md")
@@ -206,14 +208,63 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 			return errors.New("--cascade requires research_escalation_model in config.yaml, or an explicit --model / $DISTILL_MODEL")
 		}
 	}
-	_, err = digest.ValidateArtifactBinding(artifactDir, text, f.chunkSize, preflightMaxTokens)
+	packedPlan, err := digest.PlanPackedSources(parts, f.chunkSize, preflightMaxTokens)
 	if err != nil {
 		return err
 	}
-	if f.dryRun {
-		return printDigestDryRun(cmd.ErrOrStderr(), cfg, profile, f, filePath, outPath, factsPath, artifactDir, style, text, roleModel, researchEscalationModel)
+	if f.maxCalls > 0 && (f.mergeFacts || f.targetFacts > 0 || checkPrecision) {
+		return errors.New("digest: finite --max-calls cannot authoritatively plan dynamic embedding, merge-cluster, or precision-batch calls; omit --max-calls or disable --merge-facts, --target-facts, and --check-precision")
 	}
-	if _, prepareErr := digest.PrepareArtifactBinding(artifactDir, text, f.chunkSize, preflightMaxTokens); prepareErr != nil {
+	sectionCap := max(minSectionEstimate, len(packedPlan.Chunks))
+	if f.outlineFromClusters && maxSections > 0 {
+		sectionCap = maxSections
+	}
+	callPlan, err := digest.NewCallPlan(packedPlan, sectionCap, !f.noEdit, f.maxCalls, retries)
+	if err != nil {
+		return err
+	}
+	stageCalls := map[string]int{}
+	if f.docContext {
+		stageCalls["doc-context"] = 1
+	}
+	if cascadeEnabled {
+		stageCalls["research-escalation"] = len(packedPlan.Chunks)
+	}
+	if f.fuse {
+		stageCalls["fuse"] = 1
+	}
+	if f.mergeFacts {
+		stageCalls["merge"] = len(packedPlan.Chunks)
+	}
+	if f.repair {
+		stageCalls["repair"] = 1
+	}
+	if f.cite {
+		stageCalls["cite-repair"] = 1
+	}
+	if checkPrecision {
+		stageCalls["precision"] = 1
+	}
+	if f.repair && checkPrecision {
+		stageCalls["precision-repair"] = 2
+	}
+	callPlan, err = callPlan.WithStageCalls(stageCalls, retries)
+	if err != nil {
+		return err
+	}
+	if _, bindingErr := digest.ValidateArtifactBindingPlan(artifactDir, packedPlan); bindingErr != nil {
+		return bindingErr
+	}
+	// Schema-v2 response reuse is released by the runtime only after exact
+	// prompt/upstream/route sidecar validation. Preflight therefore stays
+	// conservative instead of trusting raw checkpoint presence.
+	if preflightErr := callPlan.Preflight(); preflightErr != nil {
+		return preflightErr
+	}
+	if f.dryRun {
+		return printDigestDryRun(cmd.ErrOrStderr(), cfg, profile, f, filePath, outPath, factsPath, artifactDir, style, packedPlan, callPlan, roleModel, researchEscalationModel)
+	}
+	if _, prepareErr := digest.PrepareArtifactBindingPlan(artifactDir, packedPlan); prepareErr != nil {
 		return prepareErr
 	}
 
@@ -236,9 +287,9 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 		"concurrency", concurrency,
 		"timeout_sec", timeoutSec,
 	)
-	// Secondary model for OpenRouter-native fallback. Skipped when --model /
-	// $DISTILL_MODEL pins one model (honor the pin) or when it would equal the
-	// primary (a no-op array).
+	// Secondary models are dispatched explicitly by the digest pipeline so every
+	// outbound attempt is budgeted and recorded. Never configure Wormhole's
+	// invisible OpenRouter-native models-array fallback here.
 	fallback := ""
 	if explicit == "" {
 		fallback = cfg.EffectiveFallbackProfile(profile)
@@ -265,26 +316,21 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 				BaseURL:       baseURL,
 				APIKey:        apiKey,
 				RequestBudget: budget,
-				NoRetries:     budget.Limit() > 0,
+				NoRetries:     true,
 			})
 			if eerr != nil {
 				return nil, fmt.Errorf("creating ai endpoint: %w", eerr)
 			}
 			endpointCache[endpointKey] = endpoint
 		}
-		fb := fallback
-		if provider != "openrouter" || fb == m {
-			fb = ""
-		}
 		c := endpoint.Client(ai.Config{
 			Provider:        provider,
 			BaseURL:         baseURL,
 			APIKey:          apiKey,
 			TextModel:       textModel,
-			FallbackModel:   fb,
 			ProviderOptions: providerOptionsForDigest(provider, sourceID),
 			RequestBudget:   budget,
-			NoRetries:       budget.Limit() > 0,
+			NoRetries:       true,
 		})
 		clientCache[cacheKey] = c
 		return c, nil
@@ -327,6 +373,96 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 			return fmt.Errorf("creating research escalation client: %w", err)
 		}
 	}
+	routeFor := func(model string, client digest.Completer, kind digest.RouteKind) (digest.Route, error) {
+		if client == nil || model == "" {
+			return digest.Route{Kind: kind}, nil
+		}
+		resolved, rerr := endpointForTextModel(cfg, profile, model, f.baseURL)
+		if rerr != nil {
+			return digest.Route{}, rerr
+		}
+		return digest.Route{
+			Completer: client,
+			Provider:  resolved.provider,
+			Model:     resolved.model,
+			Kind:      kind,
+			Available: true,
+		}, nil
+	}
+	fallbackRoute := digest.Route{Kind: digest.RouteFallback}
+	fallbackStatus := "disabled by explicit model pin"
+	//nolint:nestif // Credential discovery and route construction are one fallback decision.
+	if fallback != "" {
+		resolvedFallback, rerr := endpointForTextModel(cfg, profile, fallback, f.baseURL)
+		if rerr != nil {
+			return rerr
+		}
+		if ai.APIKeyForProvider(resolvedFallback.provider) == "" && resolvedFallback.provider != digestProviderLocal {
+			fallbackStatus = fmt.Sprintf("unavailable: missing %s credentials", resolvedFallback.provider)
+		} else {
+			fallbackClient, ferr := getClient(fallback)
+			if ferr != nil {
+				return fmt.Errorf("creating fallback ai client: %w", ferr)
+			}
+			fallbackRoute, err = routeFor(fallback, fallbackClient, digest.RouteFallback)
+			if err != nil {
+				return err
+			}
+			fallbackStatus = fmt.Sprintf("available: provider=%s model=%s", fallbackRoute.Provider, fallbackRoute.Model)
+		}
+	}
+	roleRoutes := make(digest.RoleRoutes)
+	addRoleRoute := func(role, model string, client digest.Completer) error {
+		primary, rerr := routeFor(model, client, digest.RoutePrimary)
+		if rerr != nil {
+			return rerr
+		}
+		roleRoutes[role] = digest.RoutePair{Primary: primary, Fallback: fallbackRoute}
+		return nil
+	}
+	for _, role := range []struct {
+		name   string
+		model  string
+		client digest.Completer
+	}{
+		{name: digestRoleResearch, model: roleModel(digestRoleResearch), client: researchClient},
+		{name: digestRoleDocContext, model: roleModel(digestRoleResearch), client: researchClient},
+		{name: digestRoleFuse, model: roleModel(digestRoleFuse), client: fuseClient},
+		{name: digestRoleMerge, model: roleModel(digestRoleFuse), client: fuseClient},
+		{name: digestRoleClusterLabels, model: roleModel(digestRoleFuse), client: fuseClient},
+		{name: digestRoleOutline, model: roleModel(digestRoleOutline), client: outlineClient},
+		{name: "section", model: roleModel("write"), client: writeClient},
+		{name: digestRoleEdit, model: roleModel(digestRoleEdit), client: editClient},
+		{name: digestRoleRepair, model: roleModel(digestRoleEdit), client: editClient},
+		{name: digestRoleCiteRepair, model: roleModel(digestRoleEdit), client: editClient},
+	} {
+		if routeErr := addRoleRoute(role.name, role.model, role.client); routeErr != nil {
+			return routeErr
+		}
+	}
+	//nolint:nestif // The judge routes are installed together when that optional client exists.
+	if judgeClient != nil {
+		judgeModel := cfg.EffectiveEvalJudgeProfile(profile)
+		if explicit != "" {
+			judgeModel = explicit
+		}
+		if routeErr := addRoleRoute(digestRoleJudge, judgeModel, judgeClient); routeErr != nil {
+			return routeErr
+		}
+		if routeErr := addRoleRoute(digestRolePrecision, judgeModel, judgeClient); routeErr != nil {
+			return routeErr
+		}
+		if routeErr := addRoleRoute(digestRolePrecisionRepair, judgeModel, judgeClient); routeErr != nil {
+			return routeErr
+		}
+	}
+	if researchEscalationClient != nil {
+		if routeErr := addRoleRoute("research-escalation", researchEscalationModel, researchEscalationClient); routeErr != nil {
+			return routeErr
+		}
+	}
+	//nolint:sloglint // The CLI intentionally uses the process-wide configured logger.
+	slog.InfoContext(cmd.Context(), "digest fallback routing", "status", fallbackStatus)
 	rc := digest.RoleCompleters{
 		Research:           researchClient,
 		ResearchEscalation: researchEscalationClient,
@@ -403,6 +539,10 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 		Context:              steerContext,
 		ResearchCache:        researchCache,
 		Embedder:             embedder,
+		PackedPlan:           &packedPlan,
+		CallPlan:             &callPlan,
+		Dispatcher:           digest.NewDispatcher(roleRoutes, budget, &callPlan, retries, time.Second),
+		ProvenanceParameters: digest.BuildProvenanceParameters(roleRoutes, retries, time.Duration(timeoutSec)*time.Second),
 	}
 
 	var artCache digest.ArticleCache
@@ -470,8 +610,9 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 	digestOpts.CacheKey = cacheKey
 	digestOpts.CacheRead = cacheRead
 	digestOpts.StoreOK = func(r *digest.Result) bool { return checkDigestGate(r, f) == nil }
+	digestOpts.FinalGate = func(r *digest.Result) error { return checkDigestGate(r, f) }
 	digestOpts.Usage = usageFn
-	res, err := digest.Run(cmd.Context(), rc, p, text, digestOpts)
+	res, err := digest.RunSources(cmd.Context(), rc, p, parts, digestOpts)
 	if err != nil {
 		return err
 	}
@@ -668,8 +809,14 @@ func writeDigestFailureSummary(w io.Writer, res *digest.Result) {
 type digestInput struct {
 	Source string
 	Text   string
+	Parts  []digestInputPart
 	Stdin  bool
 	Multi  bool
+}
+
+type digestInputPart struct {
+	Path string
+	Text string
 }
 
 func readDigestInput(stdin io.Reader, args []string) (digestInput, error) {
@@ -678,7 +825,8 @@ func readDigestInput(stdin io.Reader, args []string) (digestInput, error) {
 		if err != nil {
 			return digestInput{}, fmt.Errorf("reading stdin: %w", err)
 		}
-		return digestInput{Source: "-", Text: string(data), Stdin: true}, nil
+		text := string(data)
+		return digestInput{Source: "-", Text: text, Parts: []digestInputPart{{Path: "-", Text: text}}, Stdin: true}, nil
 	}
 	for _, arg := range args {
 		if arg == "-" {
@@ -720,21 +868,44 @@ func readDigestInput(stdin io.Reader, args []string) (digestInput, error) {
 		files = append(files, fileInput{Path: input.path, Data: data})
 	}
 	if len(files) == 1 {
-		return digestInput{Source: files[0].Path, Text: string(files[0].Data)}, nil
+		text := string(files[0].Data)
+		return digestInput{
+			Source: files[0].Path,
+			Text:   text,
+			Parts:  []digestInputPart{{Path: files[0].Path, Text: text}},
+		}, nil
 	}
 	var b strings.Builder
+	parts := make([]digestInputPart, 0, len(files))
 	for i, file := range files {
 		if i > 0 {
 			b.WriteString("\n\n")
 		}
-		fmt.Fprintf(&b, "# Source: %s\n\n", file.Path)
+		fmt.Fprintf(&b, "# Source %02d\n\n", i+1)
 		b.Write(file.Data)
+		parts = append(parts, digestInputPart{Path: file.Path, Text: string(file.Data)})
 	}
 	return digestInput{
 		Source: fmt.Sprintf("%d files", len(files)),
 		Text:   b.String(),
+		Parts:  parts,
 		Multi:  true,
 	}, nil
+}
+
+func joinDigestSourceParts(parts []digest.SourcePart) string {
+	if len(parts) == 1 {
+		return parts[0].Text
+	}
+	var b strings.Builder
+	for i, part := range parts {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "# %s\n\n", digest.SourceLabel(part.Ordinal))
+		b.WriteString(part.Text)
+	}
+	return b.String()
 }
 
 type digestPath struct {
@@ -949,12 +1120,10 @@ func providerOptionsForDigest(provider, sourcePath string) map[string]any {
 	}
 }
 
-func printDigestDryRun(out io.Writer, cfg *config.Config, profile config.Profile, f *digestFlags, filePath, outPath, factsPath, artifactDir, style, text string, roleModel func(string) string, researchEscalationModel string) error {
-	preflightMaxTokens := effectivePreflightMaxTokens(profile == config.ProfileLocal, f.maxTokens)
-	chunks, err := digest.ChunkSource(text, f.chunkSize, preflightMaxTokens)
-	if err != nil {
-		return err
-	}
+//nolint:funlen,gocognit,gocyclo,nestif,revive // Dry-run renders the complete, side-effect-free call plan.
+func printDigestDryRun(out io.Writer, cfg *config.Config, profile config.Profile, f *digestFlags, filePath, outPath, factsPath, artifactDir, style string, packedPlan digest.PackedPlan, callPlan digest.CallPlan, roleModel func(string) string, researchEscalationModel string) error {
+	var report strings.Builder
+	chunks := packedPlan.Chunks
 	type rolePlan struct {
 		name     string
 		model    string
@@ -1029,43 +1198,54 @@ func printDigestDryRun(out io.Writer, cfg *config.Config, profile config.Profile
 		roles[i].baseURL = resolved.baseURL
 	}
 
-	verified := digest.ArtifactsMatchSource(artifactDir, text, f.chunkSize, preflightMaxTokens)
-	resume := f.resume && verified
-	reusedFacts := (f.reuseFacts || resume) && fileReusable(factsPath, "facts")
-	reusedOutline := resume && fileReusable(filepath.Join(artifactDir, "responses", "outline.md"), "outline")
-	reusedResearch := countExistingArtifacts(resume, len(chunks), artifactDir, "chunk-%03d.md", "research")
-	reusedSections := 0
-	reusedEdits := 0
-	for i := 0; i < sectionEstimate; i++ {
-		if resume && fileReusable(filepath.Join(artifactDir, "responses", fmt.Sprintf("section-%03d.md", i+1)), "section") {
-			reusedSections++
-		}
-		if resume && fileReusable(filepath.Join(artifactDir, "responses", fmt.Sprintf("section-%03d.edited.md", i+1)), "edit") {
-			reusedEdits++
-		}
-	}
-	plannedCalls := plannedDigestCalls(len(chunks), f, factsPath, artifactDir, verified)
+	reusedFacts := callPlan.Reused.Research == len(chunks)
+	reusedOutline := callPlan.Reused.Outline == 1
+	reusedResearch := callPlan.Reused.Research
+	reusedSections := callPlan.Reused.Sections
+	reusedEdits := callPlan.Reused.Edits
 
-	_, _ = fmt.Fprintln(out, "Digest dry run")
-	fmt.Fprintf(out, "  source:      %s\n", filePath)
-	fmt.Fprintf(out, "  rewrite:     %s\n", outPath)
-	fmt.Fprintf(out, "  facts:       %s\n", factsPath)
-	fmt.Fprintf(out, "  artifacts:   %s\n", artifactDir)
-	fmt.Fprintf(out, "  ledger:      %s\n", filepath.Join(artifactDir, "run-ledger.jsonl"))
-	fmt.Fprintf(out, "  chunks:      %d\n", len(chunks))
-	fmt.Fprintf(out, "  calls:       %d planned", plannedCalls)
-	if f.resume || f.reuseFacts {
-		fmt.Fprintf(out, " (reused facts=%t outline=%t chunks=%d sections=%d edits=%d)", reusedFacts, reusedOutline, reusedResearch, reusedSections, reusedEdits)
+	_, _ = fmt.Fprintln(&report, "Digest dry run")
+	_, _ = fmt.Fprintf(&report, "  source:      %s\n", filePath)
+	_, _ = fmt.Fprintf(&report, "  rewrite:     %s\n", outPath)
+	_, _ = fmt.Fprintf(&report, "  facts:       %s\n", factsPath)
+	_, _ = fmt.Fprintf(&report, "  artifacts:   %s\n", artifactDir)
+	_, _ = fmt.Fprintf(&report, "  ledger:      %s\n", filepath.Join(artifactDir, "run-ledger.jsonl"))
+	_, _ = fmt.Fprintf(&report, "  chunks:      %d\n", len(chunks))
+	_, _ = fmt.Fprintf(&report, "  calls:       mandatory=%d configured_worst_case=%d section_cap=%d recovery_headroom=%d",
+		callPlan.MandatoryCalls, callPlan.ConfiguredWorstCase, callPlan.SectionCap, callPlan.RecoveryHeadroom)
+	if callPlan.HardLimit > 0 {
+		_, _ = fmt.Fprintf(&report, " hard_limit=%d", callPlan.HardLimit)
 	}
-	_, _ = fmt.Fprintln(out)
-	fmt.Fprintf(out, "  style:       %s\n", style)
-	_, _ = fmt.Fprintln(out, "  roles:")
+	if f.resume || f.reuseFacts {
+		_, _ = fmt.Fprintf(&report, " (reused facts=%t outline=%t chunks=%d sections=%d edits=%d)", reusedFacts, reusedOutline, reusedResearch, reusedSections, reusedEdits)
+	}
+	_, _ = fmt.Fprintln(&report)
+	_, _ = fmt.Fprintf(&report, "  style:       %s\n", style)
+	_, _ = fmt.Fprintln(&report, "  roles:")
 	for _, role := range roles {
-		fmt.Fprintf(out, "    %-8s model=%s request_model=%s provider=%s base_url=%s nominal_calls=%d\n",
+		_, _ = fmt.Fprintf(&report, "    %-8s model=%s request_model=%s provider=%s base_url=%s nominal_calls=%d\n",
 			role.name, role.model, role.textID, role.provider, role.baseURL, role.callCost)
 	}
-	_, _ = fmt.Fprintln(out, "  no provider calls were made")
-	return nil
+	fallbackStatus := "disabled by explicit model pin"
+	if explicit := firstNonEmpty(f.model, os.Getenv("DISTILL_MODEL")); explicit == "" {
+		fallbackModel := cfg.EffectiveFallbackProfile(profile)
+		fallbackStatus = "not configured"
+		if fallbackModel != "" {
+			resolved, rerr := endpointForTextModel(cfg, profile, fallbackModel, f.baseURL)
+			if rerr != nil {
+				return rerr
+			}
+			if ai.APIKeyForProvider(resolved.provider) == "" && resolved.provider != digestProviderLocal {
+				fallbackStatus = fmt.Sprintf("unavailable: missing %s credentials (model=%s)", resolved.provider, resolved.model)
+			} else {
+				fallbackStatus = fmt.Sprintf("available: provider=%s model=%s", resolved.provider, resolved.model)
+			}
+		}
+	}
+	_, _ = fmt.Fprintf(&report, "  fallback:    %s\n", fallbackStatus)
+	_, _ = fmt.Fprintln(&report, "  no provider calls were made")
+	_, err := io.WriteString(out, report.String())
+	return err
 }
 
 // minSectionEstimate floors the section-count estimate used for planning API
@@ -1073,6 +1253,22 @@ func printDigestDryRun(out io.Writer, cfg *config.Config, profile config.Profile
 // are chunks, so basing the estimate solely on chunk count under-predicts calls
 // for small inputs.
 const minSectionEstimate = 3
+
+const (
+	digestProviderLocal       = "local"
+	digestRoleResearch        = "research"
+	digestRoleDocContext      = "doc-context"
+	digestRoleFuse            = "fuse"
+	digestRoleMerge           = "merge"
+	digestRoleClusterLabels   = "cluster-labels"
+	digestRoleOutline         = "outline"
+	digestRoleEdit            = "edit"
+	digestRoleRepair          = "repair"
+	digestRoleCiteRepair      = "cite-repair"
+	digestRoleJudge           = "judge"
+	digestRolePrecision       = "precision"
+	digestRolePrecisionRepair = "precision-repair"
+)
 
 // verified reports whether the artifact dir's source-binding marker matches the
 // current run; unverified artifacts are never counted as reusable.
@@ -1149,33 +1345,14 @@ func digestSessionID(sourcePath string) string {
 	return "distill-digest-" + hex.EncodeToString(sum[:12])
 }
 
-// resolveDigestArtifactDir returns an explicit path without creating it. Normal
-// invocations receive a fresh empty temporary directory; dry-runs use a
-// non-existent temporary path so artifact validation remains read-only.
-func resolveDigestArtifactDir(dir string, dryRun bool) (string, error) {
+// resolveDigestArtifactDir returns a path without creating it. Preparation is
+// deliberately deferred until after authoritative call-plan preflight, so a
+// rejected finite run and every dry-run leave no artifact directory behind.
+func resolveDigestArtifactDir(dir string, _ bool) string {
 	if dir != "" {
-		return dir, nil
+		return dir
 	}
-	if dryRun {
-		return filepath.Join(os.TempDir(), fmt.Sprintf("distill-digest-dry-run-%d", time.Now().UnixNano())), nil
-	}
-	return resolveArtifactDir("")
-}
-
-// resolveArtifactDir returns dir as-is (creating it if needed) or a fresh temp
-// dir when dir is empty.
-func resolveArtifactDir(dir string) (string, error) {
-	if dir == "" {
-		d, err := os.MkdirTemp("", "distill-digest-*")
-		if err != nil {
-			return "", fmt.Errorf("creating temp dir: %w", err)
-		}
-		return d, nil
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return "", fmt.Errorf("creating artifact dir: %w", err)
-	}
-	return dir, nil
+	return filepath.Join(os.TempDir(), fmt.Sprintf("distill-digest-%d-%d", os.Getpid(), time.Now().UnixNano()))
 }
 
 // firstPositive returns the first value in vals that is greater than zero, or 0

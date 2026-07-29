@@ -226,3 +226,80 @@ func TestAPIKeyForProviderLocalNeverUsesOpenAIKey(t *testing.T) {
 		t.Fatalf("DISTILL_LOCAL_API_KEY must win, got %q", got)
 	}
 }
+
+func TestAPIKeyForProviderDirectProvidersDoNotUseOpenAIKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("ZAI_API_KEY", "")
+	t.Setenv("ZHIPU_API_KEY", "")
+
+	if got := APIKeyForProvider("deepseek"); got != "" {
+		t.Fatalf("DeepSeek API key = %q, want empty without DEEPSEEK_API_KEY", got)
+	}
+	if got := APIKeyForProvider("zai"); got != "" {
+		t.Fatalf("Z.AI API key = %q, want empty without ZAI_API_KEY or ZHIPU_API_KEY", got)
+	}
+	t.Setenv("ZHIPU_API_KEY", "zhipu-key")
+	if got := APIKeyForProvider("zai"); got != "zhipu-key" {
+		t.Fatalf("Z.AI API key = %q, want ZHIPU_API_KEY", got)
+	}
+	t.Setenv("OPENROUTER_API_KEY", "")
+	if got := APIKeyForProvider("openrouter"); got != "openai-key" {
+		t.Fatalf("OpenRouter API key = %q, want OPENAI_API_KEY fallback", got)
+	}
+}
+
+func TestNewEndpointRequiresDirectProviderKey(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("ZAI_API_KEY", "")
+	t.Setenv("ZHIPU_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+
+	for _, tc := range []struct {
+		provider string
+		baseURL  string
+		want     string
+	}{
+		{
+			provider: "deepseek",
+			baseURL:  "https://api.deepseek.com",
+			want:     `ai: missing API key for provider "deepseek"; set DEEPSEEK_API_KEY`,
+		},
+		{
+			provider: "zai",
+			baseURL:  "https://api.z.ai/api/coding/paas/v4",
+			want:     `ai: missing API key for provider "zai"; set ZAI_API_KEY or ZHIPU_API_KEY`,
+		},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			_, err := NewEndpoint(Config{Provider: tc.provider, BaseURL: tc.baseURL})
+			if got := errString(err); got != tc.want {
+				t.Fatalf("NewEndpoint error = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewEndpointAcceptsExplicitProviderKey(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		baseURL  string
+	}{
+		{provider: "deepseek", baseURL: "https://api.deepseek.com"},
+		{provider: "zai", baseURL: "https://api.z.ai/api/coding/paas/v4"},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			if _, err := NewEndpoint(Config{Provider: tc.provider, BaseURL: tc.baseURL, APIKey: "configured-key"}); err != nil {
+				t.Fatalf("NewEndpoint with Config.APIKey: %v", err)
+			}
+		})
+	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}

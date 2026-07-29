@@ -1,7 +1,6 @@
 package traceeval
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -15,18 +14,16 @@ import (
 // LastNonEmptyLine returns the final line containing non-space text. The second
 // return value is false when output contains no non-empty line.
 func LastNonEmptyLine(s string) (string, bool) {
-	sc := bufio.NewScanner(strings.NewReader(s))
-	var last string
-	ok := false
-	for sc.Scan() {
-		line := strings.TrimRight(sc.Text(), " \t\r")
+	for end := len(s); end > 0; {
+		start := strings.LastIndexByte(s[:end], '\n') + 1
+		line := strings.TrimRight(s[start:end], " \t\r")
 		if strings.TrimSpace(line) == "" {
+			end = start - 1
 			continue
 		}
-		last = line
-		ok = true
+		return line, true
 	}
-	return last, ok
+	return "", false
 }
 
 // RunProgram executes one trusted fixture program and returns its final

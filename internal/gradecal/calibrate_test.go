@@ -139,6 +139,42 @@ func TestGroundedInWinner(t *testing.T) {
 	}
 }
 
+func TestParseVerdictUsesLastBalancedObject(t *testing.T) {
+	t.Parallel()
+	raw := "example: {\"winner\":\"A\",\"reason\":\"stale\"}\n```json\n" +
+		"{\"winner\":\" b \",\"reason\":\"the set {a,b} is tighter\"}\n```\n"
+	got, err := parseVerdict(raw)
+	if err != nil {
+		t.Fatalf("parseVerdict: %v", err)
+	}
+	if got.Winner != "B" {
+		t.Fatalf("winner = %q, want normalized B", got.Winner)
+	}
+	if got.Reason != "the set {a,b} is tighter" {
+		t.Fatalf("reason = %q, want last object reason", got.Reason)
+	}
+}
+
+func TestParseVerdictRejectsInvalidAuthoritativeObject(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "no object", raw: "judge declined", want: "no JSON object"},
+		{name: "malformed final object", raw: `{"winner":"A"} then {winner:"B"}`, want: "parsing judge reply"},
+		{name: "invalid winner", raw: `{"winner":"draw","reason":"tie"}`, want: "judge winner not A/B"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseVerdict(tc.raw)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("parseVerdict error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestSabotage_DegradesText(t *testing.T) {
 	t.Parallel()
 	src := "First sentence here. Second sentence follows.\n\nA second paragraph entirely."

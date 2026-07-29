@@ -1630,6 +1630,11 @@ func TestShouldStoreArticle(t *testing.T) {
 		{"failed section skips", base, Result{FailedSections: []string{"s"}}, false},
 		{"failed edit skips", base, Result{FailedEdits: []string{"s"}}, false},
 		{"unverified facts skip", base, Result{UnverifiedFacts: true}, false},
+		{"precision pass skips", func() Options {
+			opts := base
+			opts.CheckPrecision = true
+			return opts
+		}(), Result{}, false},
 		{"nil cache skips", Options{CacheKey: "k"}, Result{}, false},
 		{"empty key skips", Options{Cache: cache}, Result{}, false},
 	}

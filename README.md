@@ -79,7 +79,10 @@ distill chunk --mode semantic --embedding-model qwen/qwen3-embedding-8b --thresh
 distill chunk --out-dir ./chunks document.md
 ```
 
-Writes numbered `.md` files and a `manifest.json` to the output directory.
+Writes numbered `.md` files and a `manifest.json` as one complete generation.
+An explicit `--out-dir` must be absent; Distill builds the generation in a
+sibling staging directory and publishes it atomically, so a failed run does not
+leave partial chunks or replace an existing path.
 
 #### Modes
 
@@ -98,7 +101,7 @@ Modes fall back to dense boundary packing when content can't be split further by
 | `--mode` | `headings` | Chunking strategy |
 | `--max-tokens` | `4000` | `cl100k_base` preflight budget per chunk; local Qwen mode uses only the derived character budget |
 | `--overlap` | `200` | Tokens of overlap between chunks |
-| `--out-dir` | temp dir | Output directory |
+| `--out-dir` | temp dir | Output directory; must be absent |
 | `--threshold` | `0.3` | Similarity threshold (semantic mode) |
 | `--embedding-model` | `$DISTILL_EMBEDDING_MODEL` | Embedding model for semantic mode (default `qwen/qwen3-embedding-8b` on OpenRouter) |
 | `--local` | — | Use the on-box Qwen embedding profile (`local_*` config keys) instead of the OpenRouter default |
@@ -147,6 +150,11 @@ model call to summarize the whole source, `digest` runs a four-role pipeline —
 research (extract atomic facts from each chunk), fuse (merge the notes), write
 (compose a narrative draft in a target style), then edit (polish it) — so no
 single call ever holds the entire document.
+
+When a directory input contains `manifest.json`, `digest` reads only the listed
+chunk files in manifest order and ignores unlisted Markdown files. An invalid
+manifest fails the command. Directories without a manifest retain the existing
+top-level `*.md` behavior.
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...   # or OPENAI_API_KEY; omit only with --local against a no-auth endpoint

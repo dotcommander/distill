@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/dotcommander/distill/internal/llmjson"
 )
 
 // Completer is the judge backend (satisfied by the wormhole ai.Client and by an
@@ -34,12 +36,10 @@ type verdict struct {
 	Reason string `json:"reason"`
 }
 
-var jsonObjRe = regexp.MustCompile(`(?s)\{.*\}`)
-
 // parseVerdict salvages the JSON object from a judge reply and validates the
 // winner is exactly "A" or "B".
 func parseVerdict(raw string) (verdict, error) {
-	m := jsonObjRe.FindString(raw)
+	m := llmjson.ExtractObject(raw)
 	if m == "" {
 		return verdict{}, fmt.Errorf("no JSON object in judge reply: %q", trunc(raw))
 	}

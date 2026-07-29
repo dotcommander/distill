@@ -18,6 +18,12 @@ import (
 // (fuse/write/edit) treat it like any other error.
 var ErrEmptyResponse = errors.New("ai complete: empty response")
 
+const (
+	providerDeepSeek = "deepseek"
+	providerGemini   = "gemini"
+	providerLocal    = "local"
+)
+
 // IsSystemic reports whether err is a run-fatal failure — bad credentials,
 // exhausted quota, or a connectivity/endpoint problem (auth, quota, network) —
 // where every model in a sweep will fail the same way. Callers should abort the
@@ -105,20 +111,33 @@ func NewEndpoint(cfg Config) (*Endpoint, error) {
 	if cfg.BaseURL == "" && providerNeedsBaseURL(prov) {
 		return nil, fmt.Errorf("ai: base URL is required for provider %q", prov)
 	}
+	switch prov {
+	//nolint:goconst // Provider names are protocol identifiers kept adjacent to routing.
+	case providerGemini, "openai", "openrouter", providerDeepSeek, "zai", providerLocal:
+	default:
+		return nil, fmt.Errorf("ai: unsupported provider %q", prov)
+	}
+	apiKey := firstNonEmpty(cfg.APIKey, APIKeyForProvider(prov))
+	if apiKey == "" {
+		switch prov {
+		case providerDeepSeek:
+			return nil, errors.New(`ai: missing API key for provider "deepseek"; set DEEPSEEK_API_KEY`)
+		case "zai":
+			return nil, errors.New(`ai: missing API key for provider "zai"; set ZAI_API_KEY or ZHIPU_API_KEY`)
+		}
+	}
 	var opts []wormhole.Option
 	switch prov {
-	case "gemini":
-		apiKey := firstNonEmpty(cfg.APIKey, os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY"))
+	case providerGemini:
 		providerConfig := types.NewProviderConfig(apiKey)
 		if cfg.BaseURL != "" {
 			providerConfig = providerConfig.WithBaseURL(cfg.BaseURL)
 		}
 		opts = []wormhole.Option{
 			wormhole.WithGemini(apiKey, providerConfig),
-			wormhole.WithDefaultProvider("gemini"),
+			wormhole.WithDefaultProvider(providerGemini),
 		}
 	case "openai":
-		apiKey := firstNonEmpty(cfg.APIKey, os.Getenv("OPENAI_API_KEY"))
 		providerConfig := types.NewProviderConfig(apiKey)
 		if cfg.BaseURL != "" {
 			providerConfig = providerConfig.WithBaseURL(cfg.BaseURL)
@@ -127,27 +146,17 @@ func NewEndpoint(cfg Config) (*Endpoint, error) {
 			wormhole.WithOpenAI(apiKey, providerConfig),
 			wormhole.WithDefaultProvider("openai"),
 		}
-	case "openrouter", "deepseek", "zai":
-		apiKey := cfg.APIKey
-		if apiKey == "" {
-			apiKey = APIKeyForProvider(prov)
-		}
+	case "openrouter", providerDeepSeek, "zai":
 		providerConfig := types.NewProviderConfig(apiKey).WithBaseURL(cfg.BaseURL)
 		opts = []wormhole.Option{
 			wormhole.WithProfiledOpenAICompatible(prov, providerConfig),
 			wormhole.WithDefaultProvider(prov),
 		}
-	case "local":
-		apiKey := cfg.APIKey
-		if apiKey == "" {
-			apiKey = APIKeyForProvider(prov)
-		}
+	case providerLocal:
 		opts = []wormhole.Option{
 			wormhole.WithOpenAICompatible(prov, cfg.BaseURL, types.NewProviderConfig(apiKey)),
 			wormhole.WithDefaultProvider(prov),
 		}
-	default:
-		return nil, fmt.Errorf("ai: unsupported provider %q", prov)
 	}
 	wh := wormhole.New(opts...)
 	return &Endpoint{
@@ -180,11 +189,11 @@ func providerForBaseURL(baseURL string) string {
 	case strings.Contains(lower, "openrouter.ai"):
 		return "openrouter"
 	case strings.Contains(lower, "deepseek.com"):
-		return "deepseek"
+		return providerDeepSeek
 	case strings.Contains(lower, "z.ai"):
 		return "zai"
 	case strings.Contains(lower, "generativelanguage.googleapis.com"):
-		return "gemini"
+		return providerGemini
 	default:
 		return ""
 	}
@@ -192,7 +201,7 @@ func providerForBaseURL(baseURL string) string {
 
 func providerNeedsBaseURL(provider string) bool {
 	switch provider {
-	case "openrouter", "deepseek", "zai", "local":
+	case "openrouter", providerDeepSeek, "zai", providerLocal:
 		return true
 	default:
 		return false
@@ -207,16 +216,16 @@ func providerNeedsBaseURL(provider string) bool {
 // DISTILL_LOCAL_API_KEY for local proxies that validate a key.
 func APIKeyForProvider(provider string) string {
 	switch provider {
-	case "deepseek":
-		return firstNonEmpty(os.Getenv("DEEPSEEK_API_KEY"), os.Getenv("OPENAI_API_KEY"))
+	case providerDeepSeek:
+		return os.Getenv("DEEPSEEK_API_KEY")
 	case "openrouter":
 		return firstNonEmpty(os.Getenv("OPENROUTER_API_KEY"), os.Getenv("OPENAI_API_KEY"))
 	case "zai":
-		return firstNonEmpty(os.Getenv("ZAI_API_KEY"), os.Getenv("ZHIPU_API_KEY"), os.Getenv("OPENAI_API_KEY"))
-	case "gemini":
+		return firstNonEmpty(os.Getenv("ZAI_API_KEY"), os.Getenv("ZHIPU_API_KEY"))
+	case providerGemini:
 		return firstNonEmpty(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY"))
-	case "local":
-		return firstNonEmpty(os.Getenv("DISTILL_LOCAL_API_KEY"), "local")
+	case providerLocal:
+		return firstNonEmpty(os.Getenv("DISTILL_LOCAL_API_KEY"), providerLocal)
 	default:
 		return os.Getenv("OPENAI_API_KEY")
 	}

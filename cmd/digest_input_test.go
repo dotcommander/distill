@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/dotcommander/distill/internal/manifest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,6 +55,91 @@ func TestReadDigestInputDirectoryUsesMarkdownFiles(t *testing.T) {
 	assert.Contains(t, input.Text, "alpha")
 	assert.Contains(t, input.Text, "beta")
 	assert.NotContains(t, input.Text, "skip")
+}
+
+func TestReadDigestInputDirectoryUsesManifest(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "001.md"), []byte("alpha\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "002.md"), []byte("beta\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "stale.md"), []byte("must not be read\n"), 0o600))
+	require.NoError(t, manifest.WriteManifest(&manifest.Manifest{
+		Chunks:      []manifest.ChunkInfo{{File: "002.md"}, {File: "001.md"}},
+		TotalChunks: 2,
+	}, dir))
+
+	input, err := readDigestInput(strings.NewReader(""), []string{dir})
+	require.NoError(t, err)
+	assert.True(t, input.Multi)
+	assert.Less(t, strings.Index(input.Text, "beta"), strings.Index(input.Text, "alpha"))
+	assert.NotContains(t, input.Text, "must not be read")
+}
+
+func TestReadDigestInputRejectsInvalidManifest(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		manifest manifest.Manifest
+		want     string
+	}{
+		{
+			name:     "missing listed chunk",
+			manifest: manifest.Manifest{Chunks: []manifest.ChunkInfo{{File: "missing.md"}}, TotalChunks: 1},
+			want:     "reading manifest chunk",
+		},
+		{
+			name:     "inconsistent total",
+			manifest: manifest.Manifest{Chunks: []manifest.ChunkInfo{{File: "001.md"}}, TotalChunks: 2},
+			want:     "total_chunks",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "001.md"), []byte("fallback must not run"), 0o600))
+			data, err := json.Marshal(tt.manifest)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0o600))
+
+			_, err = readDigestInput(strings.NewReader(""), []string{dir})
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+func TestExpandDigestInputPathspecRetainsManifestProvenance(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "001.md"), []byte("alpha"), 0o600))
+	require.NoError(t, manifest.WriteManifest(&manifest.Manifest{
+		Chunks:      []manifest.ChunkInfo{{File: "001.md"}},
+		TotalChunks: 1,
+	}, dir))
+
+	paths, err := expandDigestInputPathspec(dir)
+	require.NoError(t, err)
+	require.Equal(t, []digestPath{{
+		path:         filepath.Join(dir, "001.md"),
+		fromManifest: true,
+	}}, paths)
+}
+
+func TestExpandDigestPathspecDoesNotInterpretManifest(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	listed := filepath.Join(dir, "001.md")
+	unlisted := filepath.Join(dir, "stale.md")
+	require.NoError(t, os.WriteFile(listed, []byte("listed"), 0o600))
+	require.NoError(t, os.WriteFile(unlisted, []byte("unlisted"), 0o600))
+	require.NoError(t, manifest.WriteManifest(&manifest.Manifest{
+		Chunks:      []manifest.ChunkInfo{{File: "001.md"}},
+		TotalChunks: 1,
+	}, dir))
+
+	paths, err := expandDigestPathspec(dir)
+	require.NoError(t, err)
+	require.Equal(t, []string{listed, unlisted}, paths)
 }
 
 func TestExpandDigestPathspecSupportsRecursiveMarkdownGlob(t *testing.T) {

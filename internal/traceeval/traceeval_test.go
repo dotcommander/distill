@@ -12,12 +12,23 @@ import (
 
 func TestLastNonEmptyLine(t *testing.T) {
 	t.Parallel()
-	got, ok := LastNonEmptyLine("explain\n\n42  \n")
-	if !ok || got != "42" {
-		t.Fatalf("LastNonEmptyLine = %q, %v; want 42, true", got, ok)
-	}
-	if _, ok := LastNonEmptyLine("\n \n"); ok {
-		t.Fatal("blank output should not parse")
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+		ok   bool
+	}{
+		{name: "trims trailing whitespace", in: "explain\n\n42  \n", want: "42", ok: true},
+		{name: "preserves leading whitespace and handles CRLF", in: "explain\n  42 \t\r\n\n", want: "  42", ok: true},
+		{name: "large final line", in: "explain\n" + strings.Repeat("x", 128*1024) + " \t\r\n", want: strings.Repeat("x", 128*1024), ok: true},
+		{name: "blank", in: "\n \n", ok: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := LastNonEmptyLine(tc.in)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("LastNonEmptyLine = %q, %v; want %q, %v", got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }
 

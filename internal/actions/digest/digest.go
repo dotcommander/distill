@@ -785,10 +785,14 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 
 // shouldStoreArticle reports whether a finished run's article may enter the
 // output cache: never on partial failures, never when facts came from an
-// unverified checkpoint (the key would not describe the actual inputs), and
-// only if the caller's StoreOK gate (when set) passes.
+// unverified checkpoint (the key would not describe the actual inputs), never
+// after a precision pass that can rewrite the article, and only if the caller's
+// StoreOK gate (when set) passes.
 func shouldStoreArticle(opts Options, res *Result) bool {
 	if opts.Cache == nil || opts.CacheKey == "" {
+		return false
+	}
+	if opts.CheckPrecision {
 		return false
 	}
 	if len(res.FailedChunks)+len(res.FailedSections)+len(res.FailedEdits) > 0 {

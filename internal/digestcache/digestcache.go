@@ -33,25 +33,28 @@ type KeyInputs struct {
 	EmbeddingModel          string // folded in when MergeFacts or TargetFacts are true
 	OutlineModel            string
 	WriteModel              string // the "section" writer model
-	FuseModel               string // only folded in when Fuse is true
+	FuseModel               string // folded in when Fuse or MergeFacts is true
 	EditModel               string // only folded in when Edit is true
 
-	Style               string
-	ChunkSize           int
-	MaxTokens           int
-	Fuse                bool
-	Edit                bool
-	Appendix            bool
-	Repair              bool // when true, the verify→repair reinsert pass ran (changes the article)
-	DocContext          bool // when true, research prompts include a generated document header
-	Cite                bool // when true, generation uses temporary fact-id citation markers
-	Cascade             bool // when true, weak fresh research chunks may get one escalation pass
-	CascadeThreshold    float64
-	MergeFacts          bool // when true, similar extracted facts may be merged before writing
-	MergeThreshold      float64
-	OutlineFromClusters bool   // when true, outline is synthesized from merge clusters
-	TargetFacts         int    // when >0, only the selected fact budget feeds writing
-	Context             string // resolved steering text (empty = no preamble)
+	Style                string
+	ChunkSize            int
+	MaxTokens            int
+	Fuse                 bool
+	Edit                 bool
+	Appendix             bool
+	Repair               bool // when true, the verify→repair reinsert pass ran (changes the article)
+	DocContext           bool // when true, research prompts include a generated document header
+	Cite                 bool // when true, generation uses temporary fact-id citation markers
+	Cascade              bool // when true, weak fresh research chunks may get one escalation pass
+	CascadeThreshold     float64
+	MergeFacts           bool // when true, similar extracted facts may be merged before writing
+	MergeThreshold       float64
+	OutlineFromClusters  bool // when true, outline is synthesized from merge clusters
+	MaxSections          int
+	MinSectionFacts      int
+	ClusterBalanceFactor float64
+	TargetFacts          int    // when >0, only the selected fact budget feeds writing
+	Context              string // resolved steering text (empty = no preamble)
 
 	ResearchPrompt          string // resolved prompt template text (user-editable)
 	OutlinePrompt           string
@@ -71,7 +74,7 @@ type KeyInputs struct {
 
 // keyFormatVersion is bumped if the key pre-image layout changes, so old cache
 // entries can never be misread as current.
-const keyFormatVersion = "digestcache/v1"
+const keyFormatVersion = "digestcache/v2"
 
 // Key returns the hex sha256 cache key for in. The pre-image is a labeled,
 // newline-joined record; unbounded blobs (source, context, prompts) are folded
@@ -79,14 +82,20 @@ const keyFormatVersion = "digestcache/v1"
 // that do not run (fuse, edit, context preamble) contribute nothing, so toggling
 // an unused model/prompt never changes the key.
 func Key(in KeyInputs) string {
+	return keyWithFormat(keyFormatVersion, in)
+}
+
+type keyFieldAdder func(label, value string)
+
+func keyWithFormat(version string, in KeyInputs) string {
 	var b strings.Builder
-	add := func(label, val string) {
+	add := keyFieldAdder(func(label, val string) {
 		b.WriteString(label)
 		b.WriteByte('=')
 		b.WriteString(val)
 		b.WriteByte('\n')
-	}
-	b.WriteString(keyFormatVersion)
+	})
+	b.WriteString(version)
 	b.WriteByte('\n')
 	add("source", hashKey(in.Source))
 	add("profile", in.Profile)
@@ -109,22 +118,12 @@ func Key(in KeyInputs) string {
 		add("cascade_threshold", strconv.FormatFloat(in.CascadeThreshold, 'g', -1, 64))
 		add("model.research_escalation", in.ResearchEscalationModel)
 	}
-	if in.MergeFacts {
-		add("merge_facts", strconv.FormatBool(in.MergeFacts))
-		add("merge_threshold", strconv.FormatFloat(in.MergeThreshold, 'g', -1, 64))
-		add("model.embedding", in.EmbeddingModel)
-		add("prompt.merge_facts", hashKey(in.MergeFactsPrompt))
-		add("outline_from_clusters", strconv.FormatBool(in.OutlineFromClusters))
-		if in.OutlineFromClusters {
-			add("prompt.cluster_labels", hashKey(in.ClusterLabelsPrompt))
-		}
-	}
-	if in.TargetFacts > 0 {
-		add("target_facts", strconv.Itoa(in.TargetFacts))
-		add("model.embedding", in.EmbeddingModel)
+	addMergeKeyFields(add, in)
+	addTargetKeyFields(add, in)
+	if in.Fuse || in.MergeFacts {
+		add("model.fuse", in.FuseModel)
 	}
 	if in.Fuse {
-		add("model.fuse", in.FuseModel)
 		add("prompt.fuse", hashKey(in.FusePrompt))
 	}
 	if in.Edit {
@@ -152,6 +151,31 @@ func Key(in KeyInputs) string {
 		add("prompt.context", hashKey(in.ContextPrompt))
 	}
 	return hashKey(b.String())
+}
+
+func addMergeKeyFields(add keyFieldAdder, in KeyInputs) {
+	if !in.MergeFacts {
+		return
+	}
+	add("merge_facts", strconv.FormatBool(in.MergeFacts))
+	add("merge_threshold", strconv.FormatFloat(in.MergeThreshold, 'g', -1, 64))
+	add("model.embedding", in.EmbeddingModel)
+	add("prompt.merge_facts", hashKey(in.MergeFactsPrompt))
+	add("outline_from_clusters", strconv.FormatBool(in.OutlineFromClusters))
+	if in.OutlineFromClusters {
+		add("prompt.cluster_labels", hashKey(in.ClusterLabelsPrompt))
+		add("max_sections", strconv.Itoa(in.MaxSections))
+		add("min_section_facts", strconv.Itoa(in.MinSectionFacts))
+		add("cluster_balance_factor", strconv.FormatFloat(in.ClusterBalanceFactor, 'g', -1, 64))
+	}
+}
+
+func addTargetKeyFields(add keyFieldAdder, in KeyInputs) {
+	if in.TargetFacts <= 0 {
+		return
+	}
+	add("target_facts", strconv.Itoa(in.TargetFacts))
+	add("model.embedding", in.EmbeddingModel)
 }
 
 func hashKey(s string) string {

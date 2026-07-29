@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dotcommander/distill/internal/manifest"
@@ -43,7 +44,7 @@ func TestRunChunkRejectsOversizedFile(t *testing.T) {
 }
 
 func TestRunChunkReadsStdin(t *testing.T) {
-	dir := t.TempDir()
+	outDir := filepath.Join(t.TempDir(), "chunks")
 	r, w, err := os.Pipe()
 	require.NoError(t, err)
 	_, err = w.WriteString("## Title\n\nhello from stdin\n")
@@ -60,12 +61,12 @@ func TestRunChunkReadsStdin(t *testing.T) {
 	f := chunkFlags{
 		mode:      "headings",
 		maxTokens: 1000,
-		outDir:    dir,
+		outDir:    outDir,
 	}
 	err = runChunk(&runContext{ctx: context.Background(), in: r, out: io.Discard, errOut: io.Discard}, []string{"-"}, &f)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	data, err := os.ReadFile(filepath.Join(outDir, "manifest.json"))
 	require.NoError(t, err)
 	var m manifest.Manifest
 	require.NoError(t, json.Unmarshal(data, &m))
@@ -76,9 +77,145 @@ func TestRunChunkReadsStdin(t *testing.T) {
 	require.NotNil(t, m.TotalTokens)
 	assert.Positive(t, *m.TotalTokens)
 
-	chunk, err := os.ReadFile(filepath.Join(dir, "001.md"))
+	chunk, err := os.ReadFile(filepath.Join(outDir, "001.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(chunk), "hello from stdin")
+}
+
+func TestRunChunkRejectsExistingOutputPathWithoutMutation(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	outDir := filepath.Join(parent, "chunks")
+	require.NoError(t, os.Mkdir(outDir, 0o750))
+	stalePath := filepath.Join(outDir, "stale.md")
+	const stale = "keep this exact content\n"
+	require.NoError(t, os.WriteFile(stalePath, []byte(stale), 0o600))
+
+	f := chunkFlags{mode: "headings", maxTokens: 1000, outDir: outDir}
+	err := runChunk(
+		&runContext{ctx: context.Background(), in: strings.NewReader("# Title\n\ncontent\n"), out: io.Discard, errOut: io.Discard},
+		[]string{"-"},
+		&f,
+	)
+	require.ErrorContains(t, err, `already exists; choose a new --out-dir`)
+	data, readErr := os.ReadFile(stalePath)
+	require.NoError(t, readErr)
+	assert.Equal(t, stale, string(data))
+	entries, readErr := os.ReadDir(outDir)
+	require.NoError(t, readErr)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "stale.md", entries[0].Name())
+	assert.Empty(t, stagingDirs(t, parent, outDir))
+}
+
+func TestPrepareChunkOutputRejectsExistingTargets(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	filePath := filepath.Join(parent, "file")
+	require.NoError(t, os.WriteFile(filePath, []byte("keep"), 0o600))
+	symlinkPath := filepath.Join(parent, "link")
+	require.NoError(t, os.Symlink(filePath, symlinkPath))
+	dirPath := filepath.Join(parent, "empty-dir")
+	require.NoError(t, os.Mkdir(dirPath, 0o750))
+
+	for _, target := range []string{filePath, symlinkPath, dirPath} {
+		_, err := prepareChunkOutput(target)
+		require.ErrorContains(t, err, "already exists; choose a new --out-dir")
+	}
+}
+
+func TestRunChunkPublishesCompleteGeneration(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	outDir := filepath.Join(parent, "chunks")
+	f := chunkFlags{mode: "headings", maxTokens: 1000, outDir: outDir}
+	err := runChunk(
+		&runContext{ctx: context.Background(), in: strings.NewReader("# Title\n\ncontent\n"), out: io.Discard, errOut: io.Discard},
+		[]string{"-"},
+		&f,
+	)
+	require.NoError(t, err)
+
+	entries, readErr := os.ReadDir(outDir)
+	require.NoError(t, readErr)
+	require.Len(t, entries, 2)
+	assert.Equal(t, "001.md", entries[0].Name())
+	assert.Equal(t, "manifest.json", entries[1].Name())
+	m, readErr := manifest.ReadManifest(outDir)
+	require.NoError(t, readErr)
+	require.Equal(t, 1, m.TotalChunks)
+	info, statErr := os.Stat(outDir)
+	require.NoError(t, statErr)
+	assert.Equal(t, os.FileMode(0o750), info.Mode().Perm())
+	assert.Empty(t, stagingDirs(t, parent, outDir))
+}
+
+func TestChunkOutputAbortRemovesStagingAndLeavesTargetAbsent(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	outDir := filepath.Join(parent, "chunks")
+	output, err := prepareChunkOutput(outDir)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(output.workDir, "partial.md"), []byte("partial"), 0o600))
+
+	output.abort()
+
+	_, err = os.Stat(outDir)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	assert.Empty(t, stagingDirs(t, parent, outDir))
+}
+
+func TestChunkOutputPublishFailureLeavesConcurrentTargetUntouched(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	outDir := filepath.Join(parent, "chunks")
+	output, err := prepareChunkOutput(outDir)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(output.workDir, "partial.md"), []byte("partial"), 0o600))
+	require.NoError(t, os.Mkdir(outDir, 0o750))
+	concurrentPath := filepath.Join(outDir, "concurrent.md")
+	require.NoError(t, os.WriteFile(concurrentPath, []byte("keep"), 0o600))
+
+	err = output.publish()
+	require.ErrorContains(t, err, "already exists")
+	output.abort()
+
+	data, err := os.ReadFile(concurrentPath)
+	require.NoError(t, err)
+	assert.Equal(t, "keep", string(data))
+	assert.Empty(t, stagingDirs(t, parent, outDir))
+}
+
+func TestChunkOutputPublishInterpositionDoesNotDeleteReplacement(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	outDir := filepath.Join(parent, "chunks")
+	output, err := prepareChunkOutput(outDir)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(output.workDir, "complete.md"), []byte("complete"), 0o600))
+	output.beforeRename = func() {
+		require.NoError(t, os.Mkdir(outDir, 0o710))
+	}
+
+	err = output.publish()
+	require.ErrorContains(t, err, "already exists")
+	output.abort()
+
+	info, err := os.Stat(outDir)
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+	assert.Equal(t, os.FileMode(0o710), info.Mode().Perm())
+	entries, err := os.ReadDir(outDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+	assert.Empty(t, stagingDirs(t, parent, outDir))
+}
+
+func stagingDirs(t *testing.T, parent, outDir string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(parent, "."+filepath.Base(outDir)+".distill-staging-*"))
+	require.NoError(t, err)
+	return matches
 }
 
 func TestWriteChunksMarksUnavailableTokenCounts(t *testing.T) {

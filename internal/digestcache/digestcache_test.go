@@ -35,6 +35,9 @@ func baseInputs() KeyInputs {
 		MergeFacts:              true,
 		MergeThreshold:          0.90,
 		OutlineFromClusters:     true,
+		MaxSections:             12,
+		MinSectionFacts:         3,
+		ClusterBalanceFactor:    1.5,
 		TargetFacts:             12,
 		Context:                 "steering text",
 		ResearchPrompt:          "RESEARCH {{CHUNK}}",
@@ -90,6 +93,9 @@ func TestKeyChangesWhenAnyInputChanges(t *testing.T) {
 		"merge_facts":                func(k *KeyInputs) { k.MergeFacts = false },
 		"merge_threshold":            func(k *KeyInputs) { k.MergeThreshold = 0.80 },
 		"outline_from_clusters":      func(k *KeyInputs) { k.OutlineFromClusters = false },
+		"max_sections":               func(k *KeyInputs) { k.MaxSections = 8 },
+		"min_section_facts":          func(k *KeyInputs) { k.MinSectionFacts = 4 },
+		"cluster_balance_factor":     func(k *KeyInputs) { k.ClusterBalanceFactor = 2.0 },
 		"target_facts":               func(k *KeyInputs) { k.TargetFacts = 8 },
 		"context":                    func(k *KeyInputs) { k.Context = "other steering" },
 		"research_prompt":            func(k *KeyInputs) { k.ResearchPrompt = "OTHER" },
@@ -146,6 +152,9 @@ func TestKeyIgnoresMergeFieldsWhenDisabled(t *testing.T) {
 	in.MergeFacts = false
 	in.MergeThreshold = 0
 	in.OutlineFromClusters = false
+	in.MaxSections = 0
+	in.MinSectionFacts = 0
+	in.ClusterBalanceFactor = 0
 	in.TargetFacts = 0
 	in.EmbeddingModel = ""
 	in.MergeFactsPrompt = ""
@@ -154,6 +163,9 @@ func TestKeyIgnoresMergeFieldsWhenDisabled(t *testing.T) {
 
 	in.MergeThreshold = 0.8
 	in.OutlineFromClusters = true
+	in.MaxSections = 20
+	in.MinSectionFacts = 5
+	in.ClusterBalanceFactor = 2
 	in.EmbeddingModel = "changed-embedding"
 	in.MergeFactsPrompt = "changed merge"
 	in.ClusterLabelsPrompt = "changed labels"
@@ -164,6 +176,44 @@ func TestKeyIgnoresMergeFieldsWhenDisabled(t *testing.T) {
 	in.MergeFacts = true
 	if got := Key(in); got == base {
 		t.Fatal("enabling merge-facts did not change the key")
+	}
+}
+
+func TestKeyIgnoresClusterOutlineFieldsWhenInactive(t *testing.T) {
+	t.Parallel()
+	in := baseInputs()
+	in.OutlineFromClusters = false
+	in.MaxSections = 0
+	in.MinSectionFacts = 0
+	in.ClusterBalanceFactor = 0
+	in.ClusterLabelsPrompt = ""
+	base := Key(in)
+
+	in.MaxSections = 20
+	in.MinSectionFacts = 5
+	in.ClusterBalanceFactor = 2
+	in.ClusterLabelsPrompt = "changed labels"
+	if got := Key(in); got != base {
+		t.Fatalf("inactive cluster-outline fields changed key:\nbase=%s\n got=%s", base, got)
+	}
+}
+
+func TestKeyIncludesFuseModelWhenMergeFactsUsesIt(t *testing.T) {
+	t.Parallel()
+	in := baseInputs()
+	in.Fuse = false
+	in.MergeFacts = true
+	base := Key(in)
+
+	in.FuseModel = "different-merge-model"
+	if got := Key(in); got == base {
+		t.Fatal("merge-facts fuse model did not change key when fuse stage was disabled")
+	}
+	in.MergeFacts = false
+	withoutMerge := Key(in)
+	in.FuseModel = "unused-model"
+	if got := Key(in); got != withoutMerge {
+		t.Fatal("inactive fuse model changed key")
 	}
 }
 
@@ -251,6 +301,24 @@ func TestStoreLoadRoundTrip(t *testing.T) {
 	}
 	if gotMeta.Words != meta.Words || gotMeta.Coverage.Covered != meta.Coverage.Covered || gotMeta.Coverage.Total != meta.Coverage.Total || len(gotMeta.Coverage.Missing) != 1 {
 		t.Fatalf("meta round-trip mismatch: got %+v want %+v", gotMeta, meta)
+	}
+}
+
+func TestKeyVersionPreventsV1Reuse(t *testing.T) {
+	t.Parallel()
+	c, err := newDir(filepath.Join(t.TempDir(), "digests"))
+	if err != nil {
+		t.Fatalf("newDir: %v", err)
+	}
+	in := baseInputs()
+	v1Key := keyWithFormat("digestcache/v1", in)
+	v2Key := Key(in)
+	if v1Key == v2Key {
+		t.Fatal("v1 and v2 cache keys must differ")
+	}
+	c.Store(v1Key, "legacy article", digest.CacheMeta{Words: 2})
+	if _, _, ok := c.Load(v2Key); ok {
+		t.Fatal("v1 cache entry must miss under v2 key")
 	}
 }
 

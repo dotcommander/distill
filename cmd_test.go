@@ -79,7 +79,7 @@ func TestCountStdin(t *testing.T) {
 func TestChunkCramit(t *testing.T) {
 	t.Parallel()
 	bin := buildBinary(t)
-	outDir := t.TempDir()
+	outDir := filepath.Join(t.TempDir(), "chunks")
 
 	content := strings.Repeat("This is a test sentence. ", 100)
 	testFile := writeTestFile(t, content)
@@ -101,7 +101,7 @@ func TestChunkCramit(t *testing.T) {
 func TestChunkHeadings(t *testing.T) {
 	t.Parallel()
 	bin := buildBinary(t)
-	outDir := t.TempDir()
+	outDir := filepath.Join(t.TempDir(), "chunks")
 
 	content := "# Section One\n\nThis is the first section with some content.\nIt has multiple lines of text here.\n\n# Section Two\n\nThis is the second section.\nMore content follows here.\n\n# Section Three\n\nThe third and final section.\n"
 	testFile := writeTestFile(t, content)

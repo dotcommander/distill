@@ -20,6 +20,7 @@ import (
 	"github.com/dotcommander/distill/internal/config"
 	"github.com/dotcommander/distill/internal/digestcache"
 	"github.com/dotcommander/distill/internal/extractscore"
+	"github.com/dotcommander/distill/internal/manifest"
 	"github.com/dotcommander/distill/internal/prompts"
 	"github.com/dotcommander/distill/internal/researchcache"
 )
@@ -354,69 +355,7 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 		}
 	}
 
-	var artCache digest.ArticleCache
-	cacheKey := ""
-	cacheRead := false
-	if !f.noCache {
-		c, cerr2 := digestcache.New()
-		if cerr2 != nil {
-			slog.WarnContext(cmd.Context(), "digest output cache disabled", "err", cerr2)
-		} else {
-			artCache = c
-			cacheKey = digestcache.Key(digestcache.KeyInputs{
-				Source:                  text,
-				Profile:                 string(profile),
-				BaseURL:                 f.baseURL,
-				ResearchModel:           roleModel("research"),
-				OutlineModel:            roleModel("outline"),
-				WriteModel:              roleModel("write"),
-				FuseModel:               roleModel("fuse"),
-				EditModel:               roleModel("edit"),
-				Style:                   style,
-				ChunkSize:               f.chunkSize,
-				MaxTokens:               preflightMaxTokens,
-				Fuse:                    f.fuse,
-				Edit:                    !f.noEdit,
-				Appendix:                f.appendix,
-				Repair:                  f.repair,
-				DocContext:              f.docContext,
-				Cite:                    f.cite,
-				Cascade:                 cascadeEnabled,
-				CascadeThreshold:        cascadeThreshold,
-				ResearchEscalationModel: researchEscalationModel,
-				MergeFacts:              f.mergeFacts,
-				MergeThreshold:          mergeThreshold,
-				OutlineFromClusters:     f.outlineFromClusters,
-				TargetFacts:             f.targetFacts,
-				EmbeddingModel:          embeddingModel,
-				Context:                 steerContext,
-				ResearchPrompt:          p.Research,
-				OutlinePrompt:           p.Outline,
-				SectionPrompt:           p.Section,
-				FusePrompt:              p.Fuse,
-				EditPrompt:              p.EditSection,
-				RepairPrompt:            p.Repair,
-				DocContextPrompt:        p.DocContext,
-				DocHeaderPreamblePrompt: p.DocHeaderPreamble,
-				CiteSectionPrompt:       p.CiteSection,
-				CiteEditPrompt:          p.CiteEdit,
-				CiteRepairPrompt:        p.CiteRepair,
-				ContextPrompt:           p.ContextPreamble,
-			})
-			cacheRead = !f.reuseFacts && !checkPrecision
-		}
-	}
-
-	usageFn := func() (prompt, cached, output int64) {
-		for _, cl := range clientCache {
-			pt, ct, ot := cl.Usage()
-			prompt += pt
-			cached += ct
-			output += ot
-		}
-		return prompt, cached, output
-	}
-	res, err := digest.Run(cmd.Context(), rc, p, text, digest.Options{
+	digestOpts := digest.Options{
 		Style:                style,
 		OutPath:              outPath,
 		FactsPath:            factsPath,
@@ -447,14 +386,77 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 		RequirePrecision:     f.minPrecision > 0,
 		PrecisionBatchSize:   firstPositive(cfg.PrecisionBatchSize, 80),
 		Context:              steerContext,
-		Cache:                artCache,
-		CacheKey:             cacheKey,
-		CacheRead:            cacheRead,
 		ResearchCache:        researchCache,
 		Embedder:             embedder,
-		StoreOK:              func(r *digest.Result) bool { return checkDigestGate(r, f) == nil },
-		Usage:                usageFn,
-	})
+	}
+
+	var artCache digest.ArticleCache
+	cacheKey := ""
+	cacheRead := false
+	if !f.noCache {
+		c, cerr2 := digestcache.New()
+		if cerr2 != nil {
+			slog.WarnContext(cmd.Context(), "digest output cache disabled", "err", cerr2) //nolint:sloglint // existing command-wide progress logger routing
+		} else {
+			artCache = c
+			cacheInputs := digestcache.KeyInputs{
+				Source:                  text,
+				Profile:                 string(profile),
+				BaseURL:                 f.baseURL,
+				ResearchModel:           roleModel("research"),
+				OutlineModel:            roleModel("outline"),
+				WriteModel:              roleModel("write"),
+				FuseModel:               roleModel("fuse"),
+				EditModel:               roleModel("edit"),
+				Style:                   digestOpts.Style,
+				ChunkSize:               digestOpts.ChunkSize,
+				MaxTokens:               digestOpts.MaxTokens,
+				Fuse:                    digestOpts.Fuse,
+				Edit:                    digestOpts.Edit,
+				Appendix:                digestOpts.Appendix,
+				Repair:                  digestOpts.Repair,
+				DocContext:              digestOpts.DocContext,
+				Cite:                    digestOpts.Cite,
+				Cascade:                 digestOpts.Cascade,
+				CascadeThreshold:        digestOpts.CascadeThreshold,
+				ResearchEscalationModel: researchEscalationModel,
+				TargetFacts:             digestOpts.TargetFacts,
+				EmbeddingModel:          embeddingModel,
+				Context:                 digestOpts.Context,
+				ResearchPrompt:          p.Research,
+				OutlinePrompt:           p.Outline,
+				SectionPrompt:           p.Section,
+				FusePrompt:              p.Fuse,
+				EditPrompt:              p.EditSection,
+				RepairPrompt:            p.Repair,
+				DocContextPrompt:        p.DocContext,
+				DocHeaderPreamblePrompt: p.DocHeaderPreamble,
+				CiteSectionPrompt:       p.CiteSection,
+				CiteEditPrompt:          p.CiteEdit,
+				CiteRepairPrompt:        p.CiteRepair,
+				ContextPrompt:           p.ContextPreamble,
+			}
+			populateMergeDigestCacheInputs(&cacheInputs, digestOpts, embeddingModel, p)
+			cacheKey = digestcache.Key(cacheInputs)
+			cacheRead = !f.reuseFacts && !checkPrecision
+		}
+	}
+
+	usageFn := func() (prompt, cached, output int64) {
+		for _, cl := range clientCache {
+			pt, ct, ot := cl.Usage()
+			prompt += pt
+			cached += ct
+			output += ot
+		}
+		return prompt, cached, output
+	}
+	digestOpts.Cache = artCache
+	digestOpts.CacheKey = cacheKey
+	digestOpts.CacheRead = cacheRead
+	digestOpts.StoreOK = func(r *digest.Result) bool { return checkDigestGate(r, f) == nil }
+	digestOpts.Usage = usageFn
+	res, err := digest.Run(cmd.Context(), rc, p, text, digestOpts)
 	if err != nil {
 		return err
 	}
@@ -471,6 +473,18 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 
 	printDigestSummary(cmd.ErrOrStderr(), res, artifactDir, clientCache)
 	return checkDigestGate(res, f)
+}
+
+func populateMergeDigestCacheInputs(in *digestcache.KeyInputs, opts digest.Options, embeddingModel string, p *prompts.Set) {
+	in.MergeFacts = opts.MergeFacts
+	in.MergeThreshold = opts.MergeThreshold
+	in.OutlineFromClusters = opts.OutlineFromClusters
+	in.MaxSections = opts.MaxSections
+	in.MinSectionFacts = opts.MinSectionFacts
+	in.ClusterBalanceFactor = opts.ClusterBalanceFactor
+	in.EmbeddingModel = embeddingModel
+	in.MergeFactsPrompt = p.MergeFacts
+	in.ClusterLabelsPrompt = p.ClusterLabels
 }
 
 // checkDigestGate applies the deterministic, offline quality gate after a digest
@@ -638,24 +652,29 @@ func readDigestInput(stdin io.Reader, args []string) (digestInput, error) {
 	}
 	files := make([]fileInput, 0, len(paths))
 	total := int64(0)
-	for _, path := range paths {
-		file, err := openFileInput(path)
+	for _, input := range paths {
+		var file *os.File
+		if input.fromManifest {
+			file, err = manifest.OpenChunk(filepath.Dir(input.path), filepath.Base(input.path))
+		} else {
+			file, err = openFileInput(input.path)
+		}
 		if err != nil {
-			return digestInput{}, fmt.Errorf("reading file %s: %w", path, err)
+			return digestInput{}, fmt.Errorf("reading file %s: %w", input.path, err)
 		}
 		data, rerr := readCappedInput(file, countMaxInputBytes)
 		cerr := file.Close()
 		if rerr != nil {
-			return digestInput{}, fmt.Errorf("reading file %s: %w", path, rerr)
+			return digestInput{}, fmt.Errorf("reading file %s: %w", input.path, rerr)
 		}
 		if cerr != nil {
-			return digestInput{}, fmt.Errorf("closing file %s: %w", path, cerr)
+			return digestInput{}, fmt.Errorf("closing file %s: %w", input.path, cerr)
 		}
 		total += int64(len(data))
 		if total > countMaxInputBytes {
 			return digestInput{}, fmt.Errorf("reading pathspecs: %w: %d bytes", errCountInputTooLarge, countMaxInputBytes)
 		}
-		files = append(files, fileInput{Path: path, Data: data})
+		files = append(files, fileInput{Path: input.path, Data: data})
 	}
 	if len(files) == 1 {
 		return digestInput{Source: files[0].Path, Text: string(files[0].Data)}, nil
@@ -675,18 +694,25 @@ func readDigestInput(stdin io.Reader, args []string) (digestInput, error) {
 	}, nil
 }
 
-func expandDigestPathspecs(args []string) ([]string, error) {
-	var paths []string
-	seen := map[string]bool{}
-	add := func(path string) {
-		clean := filepath.Clean(path)
-		if !seen[clean] {
-			seen[clean] = true
-			paths = append(paths, clean)
+type digestPath struct {
+	path         string
+	fromManifest bool
+}
+
+func expandDigestPathspecs(args []string) ([]digestPath, error) {
+	var paths []digestPath
+	seen := map[string]int{}
+	add := func(input digestPath) {
+		input.path = filepath.Clean(input.path)
+		if index, ok := seen[input.path]; ok {
+			paths[index].fromManifest = paths[index].fromManifest || input.fromManifest
+			return
 		}
+		seen[input.path] = len(paths)
+		paths = append(paths, input)
 	}
 	for _, arg := range args {
-		matches, err := expandDigestPathspec(arg)
+		matches, err := expandDigestInputPathspec(arg)
 		if err != nil {
 			return nil, err
 		}
@@ -698,6 +724,54 @@ func expandDigestPathspecs(args []string) ([]string, error) {
 		return nil, errors.New("digest pathspec matched no files")
 	}
 	return paths, nil
+}
+
+func expandDigestInputPathspec(spec string) ([]digestPath, error) {
+	if paths, ok, err := manifestDigestPaths(spec); err != nil {
+		return nil, err
+	} else if ok {
+		return paths, nil
+	}
+	paths, err := expandDigestPathspec(spec)
+	if err != nil {
+		return nil, err
+	}
+	inputs := make([]digestPath, 0, len(paths))
+	for _, path := range paths {
+		inputs = append(inputs, digestPath{path: path})
+	}
+	return inputs, nil
+}
+
+func manifestDigestPaths(spec string) ([]digestPath, bool, error) {
+	if strings.ContainsAny(spec, "*?[") {
+		return nil, false, nil
+	}
+	info, err := os.Stat(spec)
+	if err != nil {
+		return nil, false, fmt.Errorf("reading pathspec %q: %w", spec, err)
+	}
+	if !info.IsDir() {
+		return nil, false, nil
+	}
+	manifestPath := filepath.Join(spec, "manifest.json")
+	if _, manifestErr := os.Lstat(manifestPath); errors.Is(manifestErr, os.ErrNotExist) {
+		return nil, false, nil
+	} else if manifestErr != nil {
+		return nil, false, fmt.Errorf("inspecting directory manifest %q: %w", manifestPath, manifestErr)
+	}
+	m, err := manifest.ReadManifest(spec)
+	if err != nil {
+		return nil, false, fmt.Errorf("reading directory manifest %q: %w", manifestPath, err)
+	}
+	paths := make([]digestPath, 0, len(m.Chunks))
+	for _, chunk := range m.Chunks {
+		paths = append(paths, digestPath{
+			path:         filepath.Join(spec, chunk.File),
+			fromManifest: true,
+		})
+	}
+	return paths, true, nil
 }
 
 func expandDigestPathspec(spec string) ([]string, error) {

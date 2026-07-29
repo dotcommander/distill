@@ -55,7 +55,7 @@ type chunkCommand struct {
 	Mode            string  `default:"headings" help:"Chunking mode: headings, semantic, cramit"`
 	MaxTokens       int     `name:"max-tokens" default:"4000" help:"Target max tokens per chunk"`
 	Overlap         int     `default:"200" help:"Tokens of overlap between chunks"`
-	OutDir          string  `name:"out-dir" help:"Output directory (default: temp dir)"`
+	OutDir          string  `name:"out-dir" help:"Output directory; must be absent (default: temp dir)"`
 	Format          string  `default:"json" help:"Output format for manifest"`
 	Threshold       float64 `default:"0.3" help:"Similarity threshold for semantic mode"`
 	Provider        string  `help:"Embedding provider for semantic mode (openrouter, openai, gemini)"`

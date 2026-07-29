@@ -96,18 +96,22 @@ func runChunk(cmd *runContext, args []string, f *chunkFlags) error {
 		return errors.New("chunking produced no chunks (input is empty or whitespace-only after cleaning)")
 	}
 
-	outDir, err := resolveOutDir(f.outDir)
+	output, err := prepareChunkOutput(f.outDir)
+	if err != nil {
+		return err
+	}
+	defer output.abort()
+
+	m, err := writeChunks(output.workDir, sourceName, text, chunks, tc, f.mode)
 	if err != nil {
 		return err
 	}
 
-	m, err := writeChunks(outDir, sourceName, text, chunks, tc, f.mode)
-	if err != nil {
-		return err
-	}
-
-	if err := manifest.WriteManifest(m, outDir); err != nil {
+	if err := manifest.WriteManifest(m, output.workDir); err != nil {
 		return fmt.Errorf("writing manifest: %w", err)
+	}
+	if err := output.publish(); err != nil {
+		return err
 	}
 
 	if f.format == "json" {
@@ -118,7 +122,7 @@ func runChunk(cmd *runContext, args []string, f *chunkFlags) error {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(jsonData))
 	}
 
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Chunks written to: %s\n", outDir)
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Chunks written to: %s\n", output.targetDir)
 	slog.InfoContext(cmd.Context(), "chunk done",
 		"file", filePath,
 		"mode", f.mode,
@@ -157,20 +161,85 @@ func chunkText(ctx context.Context, f *chunkFlags, text string, size, overlap in
 	return chunking.ChunkWithTokenLimit(c, text, size, overlap, tc), nil
 }
 
-// resolveOutDir returns dir as-is (creating it if needed) or a fresh temp dir
-// when dir is empty.
-func resolveOutDir(dir string) (string, error) {
+type chunkOutput struct {
+	targetDir    string
+	workDir      string
+	explicit     bool
+	published    bool
+	beforeRename func()
+}
+
+// prepareChunkOutput creates a private generation directory. Explicit targets
+// are published only after every chunk and the manifest have been written.
+func prepareChunkOutput(dir string) (*chunkOutput, error) {
 	if dir == "" {
 		d, err := os.MkdirTemp("", "distill-chunks-*")
 		if err != nil {
-			return "", fmt.Errorf("creating temp dir: %w", err)
+			return nil, fmt.Errorf("creating temp output dir: %w", err)
 		}
-		return d, nil
+		return &chunkOutput{targetDir: d, workDir: d}, nil
 	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return "", fmt.Errorf("creating output dir: %w", err)
+
+	dir = filepath.Clean(dir)
+	if err := requireChunkOutputTargetAbsent(dir); err != nil {
+		return nil, err
 	}
-	return dir, nil
+	parent := filepath.Dir(dir)
+	if mkdirErr := os.MkdirAll(parent, 0o750); mkdirErr != nil {
+		return nil, fmt.Errorf("creating output parent directory: %w", mkdirErr)
+	}
+	workDir, err := os.MkdirTemp(parent, "."+filepath.Base(dir)+".distill-staging-*")
+	if err != nil {
+		return nil, fmt.Errorf("creating staging directory: %w", err)
+	}
+	if err := os.Chmod(workDir, 0o750); err != nil { // #nosec G302 -- directory mode matches normal explicit output directories
+		_ = os.RemoveAll(workDir)
+		return nil, fmt.Errorf("setting staging directory permissions: %w", err)
+	}
+	return &chunkOutput{
+		targetDir: dir,
+		workDir:   workDir,
+		explicit:  true,
+	}, nil
+}
+
+func requireChunkOutputTargetAbsent(dir string) error {
+	_, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspecting output path: %w", err)
+	}
+	return fmt.Errorf("output path %q already exists; choose a new --out-dir", dir)
+}
+
+func (o *chunkOutput) publish() error {
+	if !o.explicit {
+		o.published = true
+		return nil
+	}
+	if err := requireChunkOutputTargetAbsent(o.targetDir); err != nil {
+		return err
+	}
+	if o.beforeRename != nil {
+		o.beforeRename()
+	}
+	if err := renameNoReplace(o.workDir, o.targetDir); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("output path %q already exists; choose a new --out-dir", o.targetDir)
+		}
+		return fmt.Errorf("publishing chunk generation: %w", err)
+	}
+	o.published = true
+	return nil
+}
+
+func (o *chunkOutput) abort() {
+	if o == nil || o.published {
+		return
+	}
+	_ = os.RemoveAll(o.workDir)
 }
 
 // writeChunks writes each chunk as a numbered .md file under outDir and

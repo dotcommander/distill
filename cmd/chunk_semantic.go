@@ -23,7 +23,13 @@ func chunkSemantic(ctx context.Context, f *chunkFlags, text string, size, overla
 	if err != nil {
 		return nil, err
 	}
-	cached, model, err := buildCachedEmbedder(ctx, cfg, f.local, f.provider, f.embeddingModel)
+	cached, model, err := buildCachedEmbedder(cachedEmbedderOptions{
+		ctx:          ctx,
+		cfg:          cfg,
+		local:        f.local,
+		providerFlag: f.provider,
+		modelFlag:    f.embeddingModel,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("semantic mode: %w", err)
 	}

@@ -12,18 +12,27 @@ import (
 	"github.com/dotcommander/distill/internal/embedcache"
 )
 
-func buildCachedEmbedder(ctx context.Context, cfg *config.Config, local bool, providerFlag, modelFlag string) (embedcache.BatchEmbedder, string, error) {
-	effModel, effEndpoint := cfg.EffectiveEmbedding(local)
-	model := firstNonEmpty(modelFlag, os.Getenv("DISTILL_EMBEDDING_MODEL"), effModel)
+type cachedEmbedderOptions struct {
+	ctx          context.Context
+	cfg          *config.Config
+	local        bool
+	providerFlag string
+	modelFlag    string
+	budget       *ai.RequestBudget
+}
+
+func buildCachedEmbedder(opts cachedEmbedderOptions) (embedcache.BatchEmbedder, string, error) {
+	effModel, effEndpoint := opts.cfg.EffectiveEmbedding(opts.local)
+	model := firstNonEmpty(opts.modelFlag, os.Getenv("DISTILL_EMBEDDING_MODEL"), effModel)
 	if model == "" {
 		return nil, "", errors.New("embeddings require --embedding-model, $DISTILL_EMBEDDING_MODEL, or config")
 	}
-	if os.Getenv("DISTILL_EMBEDDING_ENDPOINT") != "" && !local {
+	if os.Getenv("DISTILL_EMBEDDING_ENDPOINT") != "" && !opts.local {
 		return nil, "", errors.New("custom remote embedding endpoints are disabled; use a built-in Wormhole provider or --local")
 	}
 	baseURL := firstNonEmpty(os.Getenv("DISTILL_EMBEDDING_ENDPOINT"), effEndpoint)
 	baseURL = strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/embeddings")
-	provider := embeddingProvider(providerFlag, baseURL, local)
+	provider := embeddingProvider(opts.providerFlag, baseURL, opts.local)
 	if provider == "" {
 		return nil, "", fmt.Errorf("embedding endpoint %q is not a built-in Wormhole provider; use --local for local OpenAI-compatible endpoints", baseURL)
 	}
@@ -38,11 +47,13 @@ func buildCachedEmbedder(ctx context.Context, cfg *config.Config, local bool, pr
 		BaseURL:        baseURL,
 		APIKey:         ai.APIKeyForProvider(provider),
 		EmbeddingModel: model,
+		RequestBudget:  opts.budget,
+		NoRetries:      opts.budget != nil && opts.budget.Limit() > 0,
 	})
 	if err != nil {
 		return nil, "", fmt.Errorf("creating embedder: %w", err)
 	}
-	if _, perr := embedder.EmbedBatch(ctx, []string{"ping"}); perr != nil {
+	if _, perr := embedder.EmbedBatch(opts.ctx, []string{"ping"}); perr != nil {
 		return nil, "", fmt.Errorf("embedding provider unreachable (model %q via %s): %w", model, provider, perr)
 	}
 	cached, err := embedcache.NewEmbeddingCache(embedder, model, provider, baseURL)

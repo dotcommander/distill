@@ -32,6 +32,9 @@ const (
 // are NOT systemic — skip those per-model and let a failure-rate gate catch a
 // systemic config/endpoint fault.
 func IsSystemic(err error) bool {
+	if errors.Is(err, ErrRequestBudgetExhausted) {
+		return true
+	}
 	switch types.ClassifyError(err) {
 	case types.ErrorClassAuth, types.ErrorClassQuota, types.ErrorClassNetwork:
 		return true
@@ -53,6 +56,8 @@ type Config struct {
 	FallbackModel   string
 	EmbeddingModel  string
 	ProviderOptions map[string]any
+	RequestBudget   *RequestBudget
+	NoRetries       bool
 }
 
 // Client wraps a wormhole client. It serves text completion (Complete) and
@@ -64,6 +69,7 @@ type Client struct {
 	embeddingModel  string
 	fallbackModel   string
 	providerOptions map[string]any
+	requestBudget   *RequestBudget
 	openRouter      bool
 
 	promptTokens atomic.Int64
@@ -81,9 +87,10 @@ func (c *Client) Usage() (prompt, cached, output int64) {
 // once when a command will use several models on the same provider/base URL so
 // the underlying provider and HTTP transport are reused across model clients.
 type Endpoint struct {
-	wh         *wormhole.Wormhole
-	provider   string
-	openRouter bool
+	wh            *wormhole.Wormhole
+	provider      string
+	openRouter    bool
+	requestBudget *RequestBudget
 }
 
 // New builds a Client against a single built-in Wormhole provider. Custom remote
@@ -126,10 +133,17 @@ func NewEndpoint(cfg Config) (*Endpoint, error) {
 			return nil, errors.New(`ai: missing API key for provider "zai"; set ZAI_API_KEY or ZHIPU_API_KEY`)
 		}
 	}
+	providerConfig := func() types.ProviderConfig {
+		config := types.NewProviderConfig(apiKey)
+		if cfg.NoRetries {
+			config = config.WithNoRetries()
+		}
+		return config
+	}
 	var opts []wormhole.Option
 	switch prov {
 	case providerGemini:
-		providerConfig := types.NewProviderConfig(apiKey)
+		providerConfig := providerConfig()
 		if cfg.BaseURL != "" {
 			providerConfig = providerConfig.WithBaseURL(cfg.BaseURL)
 		}
@@ -138,7 +152,7 @@ func NewEndpoint(cfg Config) (*Endpoint, error) {
 			wormhole.WithDefaultProvider(providerGemini),
 		}
 	case "openai":
-		providerConfig := types.NewProviderConfig(apiKey)
+		providerConfig := providerConfig()
 		if cfg.BaseURL != "" {
 			providerConfig = providerConfig.WithBaseURL(cfg.BaseURL)
 		}
@@ -147,22 +161,23 @@ func NewEndpoint(cfg Config) (*Endpoint, error) {
 			wormhole.WithDefaultProvider("openai"),
 		}
 	case "openrouter", providerDeepSeek, "zai":
-		providerConfig := types.NewProviderConfig(apiKey).WithBaseURL(cfg.BaseURL)
+		providerConfig := providerConfig().WithBaseURL(cfg.BaseURL)
 		opts = []wormhole.Option{
 			wormhole.WithProfiledOpenAICompatible(prov, providerConfig),
 			wormhole.WithDefaultProvider(prov),
 		}
 	case providerLocal:
 		opts = []wormhole.Option{
-			wormhole.WithOpenAICompatible(prov, cfg.BaseURL, types.NewProviderConfig(apiKey)),
+			wormhole.WithOpenAICompatible(prov, cfg.BaseURL, providerConfig()),
 			wormhole.WithDefaultProvider(prov),
 		}
 	}
 	wh := wormhole.New(opts...)
 	return &Endpoint{
-		wh:         wh,
-		provider:   prov,
-		openRouter: prov == "openrouter",
+		wh:            wh,
+		provider:      prov,
+		openRouter:    prov == "openrouter",
+		requestBudget: cfg.RequestBudget,
 	}, nil
 }
 
@@ -175,8 +190,18 @@ func (e *Endpoint) Client(cfg Config) *Client {
 		embeddingModel:  cfg.EmbeddingModel,
 		fallbackModel:   cfg.FallbackModel,
 		providerOptions: cloneProviderOptions(cfg.ProviderOptions),
+		requestBudget:   firstBudget(cfg.RequestBudget, e.requestBudget),
 		openRouter:      e.openRouter,
 	}
+}
+
+func firstBudget(values ...*RequestBudget) *RequestBudget {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
 }
 
 // providerForBaseURL maps legacy configured URLs to built-in provider names.
@@ -265,6 +290,9 @@ func (c *Client) CompleteWithTemperature(ctx context.Context, prompt string, tem
 	}
 	if providerOptions != nil {
 		req = req.ProviderOptions(providerOptions)
+	}
+	if err := c.requestBudget.Acquire("text"); err != nil {
+		return "", err
 	}
 	resp, err := req.Generate(ctx)
 	if err != nil {

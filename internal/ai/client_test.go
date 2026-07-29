@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -129,6 +130,66 @@ func TestOpenRouterRetriesRateLimitInsideClientCall(t *testing.T) {
 	}
 	if attempts.Load() != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts.Load())
+	}
+}
+
+func TestFiniteRequestBudgetDisablesProviderRetries(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Retry-After", "0")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	budget, err := NewRequestBudget(1)
+	if err != nil {
+		t.Fatalf("new budget: %v", err)
+	}
+	client, err := New(Config{
+		Provider:      "openrouter",
+		BaseURL:       server.URL,
+		APIKey:        "test-key",
+		TextModel:     "test-model",
+		RequestBudget: budget,
+		NoRetries:     true,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	if _, err := client.Complete(context.Background(), "hello"); err == nil {
+		t.Fatal("complete succeeded")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("provider attempts = %d, want 1", got)
+	}
+	if got := budget.Used(); got != 1 {
+		t.Fatalf("budget used = %d, want 1", got)
+	}
+}
+
+func TestRequestBudgetPreventsTextSend(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","model":"test-model","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	budget, _ := NewRequestBudget(1)
+	client, err := New(Config{Provider: "openrouter", BaseURL: server.URL, APIKey: "test-key", TextModel: "test-model", RequestBudget: budget, NoRetries: true})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	if _, err := client.Complete(context.Background(), "first"); err != nil {
+		t.Fatalf("first complete: %v", err)
+	}
+	if _, err := client.Complete(context.Background(), "second"); !errors.Is(err, ErrRequestBudgetExhausted) {
+		t.Fatalf("second complete error = %v, want exhaustion", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("provider calls = %d, want 1", got)
 	}
 }
 

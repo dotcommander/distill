@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dotcommander/distill/internal/ai"
 	"github.com/dotcommander/distill/internal/extractscore"
 	"github.com/dotcommander/distill/internal/prompts"
 )
@@ -15,6 +16,16 @@ import (
 // coverage ends the loop early.
 const maxRepairPasses = 1
 
+type repairInput struct {
+	ctx      context.Context
+	llm      Completer
+	prompts  *prompts.Set
+	ledger   *runLedger
+	timeout  time.Duration
+	attempts int
+	backoff  time.Duration
+}
+
 // repairMissing runs up to maxRepairPasses targeted reinsert passes against the
 // edit-role model: each pass asks it to weave the still-missing specifics back
 // into the article without altering existing wording, then recomputes coverage
@@ -22,7 +33,9 @@ const maxRepairPasses = 1
 // only raise coverage, never lower it; an errored or non-improving pass ends the
 // loop with the best article so far. Coverage is recomputed against factsAppendix
 // (the pre-fuse fact snapshot) exactly as the initial self-check does.
-func repairMissing(ctx context.Context, llm Completer, p *prompts.Set, factsAppendix, article string, cov extractscore.SpecificsResult, ledger *runLedger, timeout time.Duration, attempts int, backoff time.Duration) (string, extractscore.SpecificsResult) {
+func repairMissing(in repairInput, factsAppendix, article string, cov extractscore.SpecificsResult) (string, extractscore.SpecificsResult, error) {
+	ctx, llm, p, ledger := in.ctx, in.llm, in.prompts, in.ledger
+	timeout, attempts, backoff := in.timeout, in.attempts, in.backoff
 	bestArticle, bestCov := article, cov
 	for pass := 0; pass < maxRepairPasses && len(bestCov.Missing) > 0; pass++ {
 		slog.InfoContext(ctx, "digest repair start", "missing", len(bestCov.Missing), "pass", pass+1)
@@ -31,6 +44,9 @@ func repairMissing(ctx context.Context, llm Completer, p *prompts.Set, factsAppe
 		repaired, err := retryComplete(ctx, "repair", llm, p.RenderRepair(bestArticle, strings.Join(bestCov.Missing, "\n")), timeout, attempts, backoff)
 		ledger.Record("repair", "", "call", started, err, beforeUsage)
 		if err != nil {
+			if ai.IsSystemic(err) {
+				return bestArticle, bestCov, err
+			}
 			// A polish-stage failure must never discard the article: keep best.
 			slog.WarnContext(ctx, "digest repair failed, keeping pre-repair article", "err", err)
 			break
@@ -44,10 +60,12 @@ func repairMissing(ctx context.Context, llm Completer, p *prompts.Set, factsAppe
 		slog.InfoContext(ctx, "digest repair improved coverage", "covered", newCov.Covered, "was", bestCov.Covered, "missing", len(newCov.Missing))
 		bestArticle, bestCov = repaired, newCov
 	}
-	return bestArticle, bestCov
+	return bestArticle, bestCov, nil
 }
 
-func repairMissingCited(ctx context.Context, llm Completer, p *prompts.Set, units []factUnit, article string, citations CitationResult, ledger *runLedger, timeout time.Duration, attempts int, backoff time.Duration) (string, CitationResult) {
+func repairMissingCited(in repairInput, units []factUnit, article string, citations CitationResult) (string, CitationResult, error) {
+	ctx, llm, p, ledger := in.ctx, in.llm, in.prompts, in.ledger
+	timeout, attempts, backoff := in.timeout, in.attempts, in.backoff
 	bestArticle, bestCitations := article, citations
 	for pass := 0; pass < maxRepairPasses && len(bestCitations.MissingIDs) > 0; pass++ {
 		missing := selectFactsTagged(units, bestCitations.MissingIDs)
@@ -60,6 +78,9 @@ func repairMissingCited(ctx context.Context, llm Completer, p *prompts.Set, unit
 		repaired, err := retryComplete(ctx, "cite-repair", llm, p.CiteRepair+p.RenderRepair(bestArticle, missing), timeout, attempts, backoff)
 		ledger.Record("cite-repair", "", "call", started, err, beforeUsage)
 		if err != nil {
+			if ai.IsSystemic(err) {
+				return bestArticle, bestCitations, err
+			}
 			slog.WarnContext(ctx, "digest cited repair failed, keeping pre-repair article", "err", err)
 			break
 		}
@@ -71,5 +92,5 @@ func repairMissingCited(ctx context.Context, llm Completer, p *prompts.Set, unit
 		slog.InfoContext(ctx, "digest cited repair improved coverage", "covered", newCitations.Covered, "was", bestCitations.Covered, "missing", len(newCitations.MissingIDs))
 		bestArticle, bestCitations = repaired, newCitations
 	}
-	return bestArticle, bestCitations
+	return bestArticle, bestCitations, nil
 }

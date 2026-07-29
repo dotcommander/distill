@@ -124,6 +124,70 @@ func TestLoadFromRefreshesOnlyUneditedMaterializedDefaults(t *testing.T) {
 	}
 }
 
+func TestResearchDefaultRefreshPreservesIdentityInstructionsAndUserEdits(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if _, initialErr := loadFrom(dir); initialErr != nil {
+		t.Fatalf("initial loadFrom: %v", initialErr)
+	}
+
+	oldDefault := []byte("old research default\n")
+	meta, metaErr := loadPromptMeta(dir)
+	if metaErr != nil {
+		t.Fatalf("load meta: %v", metaErr)
+	}
+	meta["research.md"] = hashPromptBytes(oldDefault)
+	path := filepath.Join(dir, "research.md")
+	if writeErr := fsutil.WriteFile(path, oldDefault, 0o644); writeErr != nil {
+		t.Fatalf("seed old research default: %v", writeErr)
+	}
+	if writeErr := writePromptMeta(dir, meta); writeErr != nil {
+		t.Fatalf("write old research meta: %v", writeErr)
+	}
+
+	set, refreshErr := loadFrom(dir)
+	if refreshErr != nil {
+		t.Fatalf("refresh research default: %v", refreshErr)
+	}
+	for _, want := range []string{
+		"locator-only citation wrappers",
+		"ranks",
+		"record IDs",
+		"film/batch/index values",
+		"haplogroup tags",
+		"table keys",
+		"accession-like values",
+		"row/sample/group identifiers",
+	} {
+		if !strings.Contains(set.Research, want) {
+			t.Fatalf("refreshed research default missing %q:\n%s", want, set.Research)
+		}
+	}
+
+	custom := []byte("custom research prompt\nwith exact user bytes\n")
+	meta, metaErr = loadPromptMeta(dir)
+	if metaErr != nil {
+		t.Fatalf("reload meta: %v", metaErr)
+	}
+	meta["research.md"] = hashPromptBytes(oldDefault)
+	if writeErr := fsutil.WriteFile(path, custom, 0o644); writeErr != nil {
+		t.Fatalf("seed custom research prompt: %v", writeErr)
+	}
+	if writeErr := writePromptMeta(dir, meta); writeErr != nil {
+		t.Fatalf("write stale research meta: %v", writeErr)
+	}
+	if _, loadErr := loadFrom(dir); loadErr != nil {
+		t.Fatalf("load custom research prompt: %v", loadErr)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read custom research prompt: %v", readErr)
+	}
+	if string(got) != string(custom) {
+		t.Fatalf("user-edited research prompt changed:\n got %q\nwant %q", got, custom)
+	}
+}
+
 func TestRenderContextPreamble(t *testing.T) {
 	t.Parallel()
 	set, err := loadFrom(t.TempDir())
@@ -133,5 +197,18 @@ func TestRenderContextPreamble(t *testing.T) {
 	got := set.RenderContextPreamble("FOCUS-ON-METHODOLOGY")
 	if !strings.Contains(got, "FOCUS-ON-METHODOLOGY") || strings.Contains(got, "{{CONTEXT}}") {
 		t.Fatalf("context preamble not rendered: %q", got)
+	}
+}
+
+func TestDefaultPrecisionPromptRequiresExactGlobalIndexes(t *testing.T) {
+	t.Parallel()
+	set, err := loadFrom(t.TempDir())
+	if err != nil {
+		t.Fatalf("loadFrom: %v", err)
+	}
+	for _, want := range []string{"exactly one verdict", "every displayed global sentence index", "each displayed index once", "no other index"} {
+		if !strings.Contains(set.Precision, want) {
+			t.Fatalf("precision prompt missing %q:\n%s", want, set.Precision)
+		}
 	}
 }

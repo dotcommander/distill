@@ -23,6 +23,9 @@ func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float32, e
 			end = len(texts)
 		}
 		batch := texts[start:end]
+		if err := c.requestBudget.Acquire("embedding"); err != nil {
+			return nil, err
+		}
 		resp, err := c.wh.Embeddings().Model(c.embeddingModel).Input(batch...).Generate(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("ai embed batch [%d:%d] (%s): %w", start, end, types.ClassifyError(err), err)

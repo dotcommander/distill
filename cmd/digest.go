@@ -78,6 +78,15 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 	if f.chunkSize < 1000 {
 		return errors.New("--chunk-size must be >= 1000")
 	}
+	budget, err := ai.NewRequestBudget(f.maxCalls)
+	if err != nil {
+		return fmt.Errorf("--max-calls: %w", err)
+	}
+	if budget.Limit() > 0 {
+		defer func() {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "request budget: %d/%d\n", budget.Used(), budget.Limit())
+		}()
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -142,7 +151,7 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 		sourceID = "pathspec:" + hex.EncodeToString(sum[:12])
 	}
 
-	artifactDir, err := resolveArtifactDir(f.artifacts)
+	artifactDir, err := resolveDigestArtifactDir(f.artifacts, f.dryRun)
 	if err != nil {
 		return err
 	}
@@ -197,18 +206,15 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 			return errors.New("--cascade requires research_escalation_model in config.yaml, or an explicit --model / $DISTILL_MODEL")
 		}
 	}
+	_, err = digest.ValidateArtifactBinding(artifactDir, text, f.chunkSize, preflightMaxTokens)
+	if err != nil {
+		return err
+	}
 	if f.dryRun {
 		return printDigestDryRun(cmd.ErrOrStderr(), cfg, profile, f, filePath, outPath, factsPath, artifactDir, style, text, roleModel, researchEscalationModel)
 	}
-	if f.maxCalls > 0 {
-		chunks, cerr := digest.ChunkSource(text, f.chunkSize, preflightMaxTokens)
-		if cerr != nil {
-			return cerr
-		}
-		plannedCalls := plannedDigestCalls(len(chunks), f, factsPath, artifactDir, digest.ArtifactsMatchSource(artifactDir, text, f.chunkSize, preflightMaxTokens))
-		if plannedCalls > f.maxCalls {
-			return fmt.Errorf("digest planned %d provider calls, exceeds --max-calls %d (use --dry-run, --resume, --reuse-facts, or a higher ceiling)", plannedCalls, f.maxCalls)
-		}
+	if _, prepareErr := digest.PrepareArtifactBinding(artifactDir, text, f.chunkSize, preflightMaxTokens); prepareErr != nil {
+		return prepareErr
 	}
 
 	progress := newDigestProgress(cmd.ErrOrStderr())
@@ -255,9 +261,11 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 		if !ok {
 			var eerr error
 			endpoint, eerr = ai.NewEndpoint(ai.Config{
-				Provider: provider,
-				BaseURL:  baseURL,
-				APIKey:   apiKey,
+				Provider:      provider,
+				BaseURL:       baseURL,
+				APIKey:        apiKey,
+				RequestBudget: budget,
+				NoRetries:     budget.Limit() > 0,
 			})
 			if eerr != nil {
 				return nil, fmt.Errorf("creating ai endpoint: %w", eerr)
@@ -275,6 +283,8 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 			TextModel:       textModel,
 			FallbackModel:   fb,
 			ProviderOptions: providerOptionsForDigest(provider, sourceID),
+			RequestBudget:   budget,
+			NoRetries:       budget.Limit() > 0,
 		})
 		clientCache[cacheKey] = c
 		return c, nil
@@ -349,7 +359,12 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 	var embedder digest.BatchEmbedder
 	if f.mergeFacts || f.targetFacts > 0 {
 		var berr error
-		embedder, embeddingModel, berr = buildCachedEmbedder(cmd.Context(), cfg, f.local, "", "")
+		embedder, embeddingModel, berr = buildCachedEmbedder(cachedEmbedderOptions{
+			ctx:    cmd.Context(),
+			cfg:    cfg,
+			local:  f.local,
+			budget: budget,
+		})
 		if berr != nil {
 			return fmt.Errorf("creating digest embedder: %w", berr)
 		}
@@ -471,7 +486,7 @@ func runDigest(cmd *runContext, args []string, f *digestFlags) error {
 	slog.SetDefault(previousLogger)
 	progressActive = false
 
-	printDigestSummary(cmd.ErrOrStderr(), res, artifactDir, clientCache)
+	printDigestSummary(cmd.ErrOrStderr(), res, artifactDir, clientCache, budget)
 	return checkDigestGate(res, f)
 }
 
@@ -527,16 +542,29 @@ func checkDigestGate(res *digest.Result, f *digestFlags) error {
 
 // printDigestSummary writes the post-run output paths, token usage, reuse
 // counts, fact-coverage, and any failure warnings for a completed digest run.
-func printDigestSummary(w io.Writer, res *digest.Result, artifactDir string, clientCache map[string]*ai.Client) {
+func printDigestSummary(w io.Writer, res *digest.Result, artifactDir string, clientCache map[string]*ai.Client, budget *ai.RequestBudget) {
+	writeDigestOutputSummary(w, res, artifactDir, budget)
+	writeDigestUsageSummary(w, clientCache)
+	writeDigestReuseSummary(w, res)
+	writeDigestCoverageSummary(w, res)
+	writeDigestCitationSummary(w, res)
+	writeDigestPrecisionSummary(w, res)
+	writeDigestFailureSummary(w, res)
+}
+
+func writeDigestOutputSummary(w io.Writer, res *digest.Result, artifactDir string, budget *ai.RequestBudget) {
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Output")
-	if res.CacheHit {
+	if res.CacheHit && budget.Used() == 0 {
 		_, _ = fmt.Fprintln(w, "  (served from digest output cache; no provider calls)")
 	}
 	_, _ = fmt.Fprintf(w, "  rewrite: %s\n", res.OutPath)
 	_, _ = fmt.Fprintf(w, "  facts:   %s\n", res.FactsPath)
 	_, _ = fmt.Fprintf(w, "  run:     %s\n", artifactDir)
 	_, _ = fmt.Fprintf(w, "  ledger:  %s\n", res.LedgerPath)
+}
+
+func writeDigestUsageSummary(w io.Writer, clientCache map[string]*ai.Client) {
 	var promptToks, cachedToks, outputToks int64
 	for _, cl := range clientCache {
 		p, c, o := cl.Usage()
@@ -548,6 +576,9 @@ func printDigestSummary(w io.Writer, res *digest.Result, artifactDir string, cli
 		pct := 100 * cachedToks / promptToks
 		_, _ = fmt.Fprintf(w, "  tokens: %d prompt (%d cached, %d%%) + %d output\n", promptToks, cachedToks, pct, outputToks)
 	}
+}
+
+func writeDigestReuseSummary(w io.Writer, res *digest.Result) {
 	if res.ReusedFacts || res.ReusedOutline || res.ReusedChunks > 0 || res.ReusedSections > 0 || res.ReusedEdits > 0 {
 		_, _ = fmt.Fprintf(w, "  reused:  facts=%t outline=%t chunks=%d sections=%d edits=%d\n",
 			res.ReusedFacts, res.ReusedOutline, res.ReusedChunks, res.ReusedSections, res.ReusedEdits)
@@ -555,6 +586,9 @@ func printDigestSummary(w io.Writer, res *digest.Result, artifactDir string, cli
 	if res.UnverifiedFacts {
 		_, _ = fmt.Fprintln(w, "  warning: facts reused from a checkpoint not verified against this source; article not cached")
 	}
+}
+
+func writeDigestCoverageSummary(w io.Writer, res *digest.Result) {
 	if res.Coverage.Total > 0 {
 		pct := 100 * res.Coverage.Covered / res.Coverage.Total
 		_, _ = fmt.Fprintf(w, "  fact-coverage: %d%% (%d/%d specifics survived)\n", pct, res.Coverage.Covered, res.Coverage.Total)
@@ -571,6 +605,9 @@ func printDigestSummary(w io.Writer, res *digest.Result, artifactDir string, cli
 			_, _ = fmt.Fprintf(w, "  warning: %d specific(s) dropped: %s%s\n", len(res.Coverage.Missing), strings.Join(shown, ", "), suffix)
 		}
 	}
+}
+
+func writeDigestCitationSummary(w io.Writer, res *digest.Result) {
 	if res.Citations != nil && res.Citations.Total > 0 {
 		pct := 100 * res.Citations.Covered / res.Citations.Total
 		_, _ = fmt.Fprintf(w, "  citations: %d%% (%d/%d facts cited)\n", pct, res.Citations.Covered, res.Citations.Total)
@@ -588,9 +625,12 @@ func printDigestSummary(w io.Writer, res *digest.Result, artifactDir string, cli
 			_, _ = fmt.Fprintf(w, "  warning: %d fact citation(s) missing: %s%s\n", len(res.Citations.MissingIDs), strings.Join(parts, ", "), suffix)
 		}
 	}
+}
+
+func writeDigestPrecisionSummary(w io.Writer, res *digest.Result) {
 	if res.Precision != nil && res.Precision.Total > 0 {
 		pct := int(res.Precision.Precision * 100)
-		fmt.Fprintf(w, "  precision: %d%% (%d/%d sentences supported)\n", pct, res.Precision.Supported, res.Precision.Total)
+		_, _ = fmt.Fprintf(w, "  precision: %d%% (%d/%d sentences supported)\n", pct, res.Precision.Supported, res.Precision.Total)
 		if len(res.Precision.Unsupported) > 0 {
 			shown := res.Precision.Unsupported
 			suffix := ""
@@ -602,22 +642,25 @@ func printDigestSummary(w io.Writer, res *digest.Result, artifactDir string, cli
 			for i, u := range shown {
 				parts[i] = strconv.Itoa(u.Index)
 			}
-			fmt.Fprintf(w, "  warning: %d unsupported sentence(s): %s%s\n", len(res.Precision.Unsupported), strings.Join(parts, ", "), suffix)
+			_, _ = fmt.Fprintf(w, "  warning: %d unsupported sentence(s): %s%s\n", len(res.Precision.Unsupported), strings.Join(parts, ", "), suffix)
 		}
 	}
+}
+
+func writeDigestFailureSummary(w io.Writer, res *digest.Result) {
 	if res.Contradictions > 0 {
-		fmt.Fprintf(w, "  contradictions: %d reported\n", res.Contradictions)
+		_, _ = fmt.Fprintf(w, "  contradictions: %d reported\n", res.Contradictions)
 	}
 	if len(res.FailedChunks) > 0 {
-		fmt.Fprintf(w, "  warning: %d chunk(s) failed extraction: %s\n",
+		_, _ = fmt.Fprintf(w, "  warning: %d chunk(s) failed extraction: %s\n",
 			len(res.FailedChunks), strings.Join(res.FailedChunks, ", "))
 	}
 	if len(res.FailedSections) > 0 {
-		fmt.Fprintf(w, "  warning: %d section(s) failed after retries (stubbed): %s\n",
+		_, _ = fmt.Fprintf(w, "  warning: %d section(s) failed after retries (stubbed): %s\n",
 			len(res.FailedSections), strings.Join(res.FailedSections, "; "))
 	}
 	if len(res.FailedEdits) > 0 {
-		fmt.Fprintf(w, "  warning: %d section edit(s) failed after retries (kept draft): %s\n",
+		_, _ = fmt.Fprintf(w, "  warning: %d section edit(s) failed after retries (kept draft): %s\n",
 			len(res.FailedEdits), strings.Join(res.FailedEdits, "; "))
 	}
 }
@@ -1104,6 +1147,19 @@ func digestSessionID(sourcePath string) string {
 	}
 	sum := sha256.Sum256([]byte(abs))
 	return "distill-digest-" + hex.EncodeToString(sum[:12])
+}
+
+// resolveDigestArtifactDir returns an explicit path without creating it. Normal
+// invocations receive a fresh empty temporary directory; dry-runs use a
+// non-existent temporary path so artifact validation remains read-only.
+func resolveDigestArtifactDir(dir string, dryRun bool) (string, error) {
+	if dir != "" {
+		return dir, nil
+	}
+	if dryRun {
+		return filepath.Join(os.TempDir(), fmt.Sprintf("distill-digest-dry-run-%d", time.Now().UnixNano())), nil
+	}
+	return resolveArtifactDir("")
 }
 
 // resolveArtifactDir returns dir as-is (creating it if needed) or a fresh temp

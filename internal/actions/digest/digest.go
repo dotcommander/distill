@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io/fs"
 	"log/slog"
 	"math/bits"
 	"os"
@@ -114,7 +115,23 @@ type Options struct {
 	// stage to record per-stage token deltas; the concurrent research stage is
 	// accounted as one phase-level event (per-call deltas would double-count
 	// across overlapping calls). Nil disables token accounting (deltas stay 0).
-	Usage func() (prompt, cached, output int64)
+	Usage     func() (prompt, cached, output int64)
+	writeFile func(path string, data []byte, perm fs.FileMode) error
+}
+
+func writeCheckpoint(opts Options, stage, path string, data []byte) error {
+	if err := opts.writeFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("digest: write %s checkpoint %q: %w", stage, path, err)
+	}
+	return nil
+}
+
+func writeJSONCheckpoint(opts Options, stage, path string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("digest: encode %s checkpoint %q: %w", stage, path, err)
+	}
+	return writeCheckpoint(opts, stage, path, data)
 }
 
 // Result reports where outputs landed and which chunks failed extraction.
@@ -190,10 +207,10 @@ func newRunLedger(path string, usage func() (prompt, cached, output int64)) (*ru
 	if path == "" {
 		return nil, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return nil, fmt.Errorf("digest: creating ledger dir: %w", err)
+	if os.MkdirAll(filepath.Dir(path), 0o750) == nil {
+		return &runLedger{path: path, usage: usage}, nil
 	}
-	return &runLedger{path: path, usage: usage}, nil
+	return nil, nil
 }
 
 // usageNow returns the provider's current cumulative token counts, or a zero
@@ -335,10 +352,24 @@ type RoleCompleters struct {
 // LLM error fails the whole run fast. The run also fails if no facts could be
 // extracted at all.
 func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, opts Options) (*Result, error) {
+	if opts.writeFile == nil {
+		opts.writeFile = fsutil.WriteFile
+	}
+	// Direct callers must receive the same fail-closed artifact protection as
+	// the CLI. The CLI prepares this before constructing clients; repeating it
+	// here protects callers that invoke Run without the CLI boundary.
+	reuseOK, err := PrepareArtifactBinding(opts.ArtifactDir, source, opts.ChunkSize, opts.MaxTokens)
+	if err != nil {
+		return nil, err
+	}
 	if opts.CacheRead && opts.Cache != nil && opts.CacheKey != "" {
 		if article, meta, ok := opts.Cache.Load(opts.CacheKey); ok {
-			if err := fsutil.WriteFile(opts.OutPath, []byte(article), 0o644); err != nil {
-				return nil, fmt.Errorf("digest: writing cached output: %w", err)
+			if cacheOutputErr := writeCheckpoint(opts, "cached final output", opts.OutPath, []byte(article)); cacheOutputErr != nil {
+				return nil, cacheOutputErr
+			}
+			artifactPath := filepath.Join(opts.ArtifactDir, "responses", "rewrite.md")
+			if cacheArtifactErr := writeCheckpoint(opts, "cached final artifact", artifactPath, []byte(article)); cacheArtifactErr != nil {
+				return nil, fmt.Errorf("digest: cached final artifact copy failed; durable --out survives at %q: %w", opts.OutPath, cacheArtifactErr)
 			}
 			ledgerPath := opts.LedgerPath
 			if ledgerPath == "" && opts.ArtifactDir != "" {
@@ -355,17 +386,12 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 	if err != nil {
 		return nil, err
 	}
-	// Bind artifact reuse to the current source: on a missing or mismatched
-	// marker, stale artifacts are invalidated and all resume reuse is disabled
-	// for this run (opts is a value copy, so clearing Resume gates every reuse
-	// site — facts, research responses, outline, sections, edits).
-	reuseOK, err := ensureArtifactBinding(ctx, opts, source)
-	if err != nil {
-		return nil, err
-	}
+	// A newly prepared marker has no reusable artifacts. opts is a value copy,
+	// so clearing Resume gates every reuse site — facts, research responses,
+	// outline, sections, and edits.
 	if !reuseOK {
 		if opts.Resume {
-			ledger.RecordZeroDelta("artifacts", "", "invalidate", time.Time{}, nil)
+			ledger.RecordZeroDelta("artifacts", "", "new", time.Time{}, nil)
 		}
 		opts.Resume = false
 	}
@@ -414,7 +440,9 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 			return nil, errors.New("digest: fuse returned empty output")
 		}
 		facts = strings.TrimSpace(fused)
-		_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "facts.fused.md"), []byte(facts), 0o644)
+		if fusedWriteErr := writeCheckpoint(opts, "fused facts", filepath.Join(opts.ArtifactDir, "facts.fused.md"), []byte(facts)); fusedWriteErr != nil {
+			return nil, fusedWriteErr
+		}
 		slog.InfoContext(ctx, "digest fuse done")
 	}
 
@@ -484,7 +512,9 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 				return nil, fmt.Errorf("digest: outline: %w", err)
 			}
 		}
-		_ = fsutil.WriteFile(outlinePath, []byte(strings.TrimSpace(outlineText)), 0o644)
+		if err := writeCheckpoint(opts, "outline", outlinePath, []byte(strings.TrimSpace(outlineText))); err != nil {
+			return nil, err
+		}
 	}
 	if strings.TrimSpace(outlineText) == "" {
 		return nil, errors.New("digest: outline returned empty output")
@@ -588,11 +618,15 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 			continue
 		}
 		bodies[i] = body
-		_ = fsutil.WriteFile(sectionPath, []byte(bodies[i]), 0o644)
+		if err := writeCheckpoint(opts, "section draft", sectionPath, []byte(bodies[i])); err != nil {
+			return nil, err
+		}
 		slog.InfoContext(ctx, "digest section done", "section", s.title, "n", i+1, "total", len(secs))
 	}
 	draft := assembleArticle(title, secs, bodies)
-	_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "draft.md"), []byte(draft), 0o644)
+	if err := writeCheckpoint(opts, "draft", filepath.Join(opts.ArtifactDir, "responses", "draft.md"), []byte(draft)); err != nil {
+		return nil, err
+	}
 	slog.InfoContext(ctx, "digest draft done", "sections", len(secs))
 
 	// edit (opt-in): rewrite one section at a time against the STABLE full draft as
@@ -637,7 +671,9 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 				continue
 			}
 			bodies[i] = edited
-			_ = fsutil.WriteFile(editPath, []byte(bodies[i]), 0o644)
+			if err := writeCheckpoint(opts, "section edit", editPath, []byte(bodies[i])); err != nil {
+				return nil, err
+			}
 			slog.InfoContext(ctx, "digest edit done", "section", s.title, "n", i+1, "total", len(secs))
 		}
 		final = assembleArticle(title, secs, bodies)
@@ -646,20 +682,31 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 	citedForPrecision := ""
 	if opts.Cite {
 		cited := final
-		_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "rewrite.cited.md"), []byte(cited), 0o644)
+		if err := writeCheckpoint(opts, "cited rewrite", filepath.Join(opts.ArtifactDir, "responses", "rewrite.cited.md"), []byte(cited)); err != nil {
+			return nil, err
+		}
 		citations := computeCitations(units, cited)
 		res.Citations = &citations
-		if data, jerr := json.MarshalIndent(citations, "", "  "); jerr == nil {
-			_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "citations.json"), data, 0o644)
+		if err := writeJSONCheckpoint(opts, "citations", filepath.Join(opts.ArtifactDir, "responses", "citations.json"), citations); err != nil {
+			return nil, err
 		}
 		if citations.Total > 0 && len(citeGroupRe.FindAllString(cited, -1)) == 0 {
 			slog.WarnContext(ctx, "digest citation check found no markers; model ignored citation instructions", "total", citations.Total)
 		} else if opts.Repair && len(citations.MissingIDs) > 0 {
-			cited, citations = repairMissingCited(ctx, rc.Edit, p, units, cited, citations, ledger, opts.Timeout, retries, backoff)
+			var rerr error
+			cited, citations, rerr = repairMissingCited(repairInput{
+				ctx: ctx, llm: rc.Edit, prompts: p, ledger: ledger,
+				timeout: opts.Timeout, attempts: retries, backoff: backoff,
+			}, units, cited, citations)
+			if rerr != nil {
+				return nil, fmt.Errorf("digest: citation repair: %w", rerr)
+			}
 			res.Citations = &citations
-			_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "rewrite.cited.md"), []byte(cited), 0o644)
-			if data, jerr := json.MarshalIndent(citations, "", "  "); jerr == nil {
-				_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "citations.json"), data, 0o644)
+			if err := writeCheckpoint(opts, "cited rewrite", filepath.Join(opts.ArtifactDir, "responses", "rewrite.cited.md"), []byte(cited)); err != nil {
+				return nil, err
+			}
+			if err := writeJSONCheckpoint(opts, "citations", filepath.Join(opts.ArtifactDir, "responses", "citations.json"), citations); err != nil {
+				return nil, err
 			}
 		}
 		citedForPrecision = cited
@@ -670,8 +717,8 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 	// (numbers, dates, names) from the research facts survive into the article.
 	// Computed on the pre-appendix article so the appendix cannot inflate it.
 	res.Coverage = extractscore.SpecificsCoverage(coverageBase, final)
-	if data, jerr := json.MarshalIndent(res.Coverage, "", "  "); jerr == nil {
-		_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "coverage.json"), data, 0o644)
+	if err := writeJSONCheckpoint(opts, "coverage", filepath.Join(opts.ArtifactDir, "responses", "coverage.json"), res.Coverage); err != nil {
+		return nil, err
 	}
 	slog.InfoContext(ctx, "digest fact-coverage", "covered", res.Coverage.Covered, "total", res.Coverage.Total, "dropped", len(res.Coverage.Missing))
 
@@ -679,9 +726,16 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 	// bounded reinsert pass against the edit-role model, then recompute coverage.
 	// Best-of by Covered — repair can only raise coverage, never lower it.
 	if opts.Repair && !opts.Cite && len(res.Coverage.Missing) > 0 {
-		final, res.Coverage = repairMissing(ctx, rc.Edit, p, coverageBase, final, res.Coverage, ledger, opts.Timeout, retries, backoff)
-		if data, jerr := json.MarshalIndent(res.Coverage, "", "  "); jerr == nil {
-			_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "coverage.json"), data, 0o644)
+		var rerr error
+		final, res.Coverage, rerr = repairMissing(repairInput{
+			ctx: ctx, llm: rc.Edit, prompts: p, ledger: ledger,
+			timeout: opts.Timeout, attempts: retries, backoff: backoff,
+		}, coverageBase, final, res.Coverage)
+		if rerr != nil {
+			return nil, fmt.Errorf("digest: coverage repair: %w", rerr)
+		}
+		if err := writeJSONCheckpoint(opts, "coverage", filepath.Join(opts.ArtifactDir, "responses", "coverage.json"), res.Coverage); err != nil {
+			return nil, err
 		}
 		slog.InfoContext(ctx, "digest fact-coverage after repair", "covered", res.Coverage.Covered, "total", res.Coverage.Total, "dropped", len(res.Coverage.Missing))
 	}
@@ -700,6 +754,9 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 			}
 			precision, perr := checkPrecision(ctx, rc.Judge, p, facts, sentences, opts.PrecisionBatchSize, ledger, opts.Timeout, retries, backoff)
 			if perr != nil {
+				if ai.IsSystemic(perr) {
+					return nil, fmt.Errorf("digest: precision: %w", perr)
+				}
 				if opts.RequirePrecision {
 					return nil, perr
 				}
@@ -712,6 +769,9 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 						repairArticle = citedForPrecision
 					}
 					repaired, repairedCov, rerr := repairPrecision(ctx, rc.Judge, p, facts, precision.Unsupported, repairArticle, coverageBase, res.Coverage, ledger, opts.Timeout, retries, backoff)
+					if rerr != nil && ai.IsSystemic(rerr) {
+						return nil, fmt.Errorf("digest: precision repair: %w", rerr)
+					}
 					if rerr == nil {
 						repairSentences := extractscore.SplitSentences(repaired)
 						if opts.Cite {
@@ -719,6 +779,9 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 						}
 						repairedPrecision, rperr := checkPrecision(ctx, rc.Judge, p, facts, repairSentences, opts.PrecisionBatchSize, ledger, opts.Timeout, retries, backoff)
 						if rperr != nil {
+							if ai.IsSystemic(rperr) {
+								return nil, fmt.Errorf("digest: precision re-check: %w", rperr)
+							}
 							if opts.RequirePrecision {
 								return nil, rperr
 							}
@@ -726,17 +789,19 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 						} else {
 							final = repaired
 							res.Coverage = repairedCov
-							if data, jerr := json.MarshalIndent(repairedCov, "", "  "); jerr == nil {
-								_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "coverage.json"), data, 0o644)
+							if err := writeJSONCheckpoint(opts, "coverage", filepath.Join(opts.ArtifactDir, "responses", "coverage.json"), repairedCov); err != nil {
+								return nil, err
 							}
 							if opts.Cite {
 								repairedCitations := computeCitations(units, repaired)
 								res.Citations = &repairedCitations
 								citedForPrecision = repaired
 								final = stripCiteMarkers(repaired)
-								_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "rewrite.cited.md"), []byte(citedForPrecision), 0o644)
-								if data, jerr := json.MarshalIndent(repairedCitations, "", "  "); jerr == nil {
-									_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "citations.json"), data, 0o644)
+								if err := writeCheckpoint(opts, "cited rewrite", filepath.Join(opts.ArtifactDir, "responses", "rewrite.cited.md"), []byte(citedForPrecision)); err != nil {
+									return nil, err
+								}
+								if err := writeJSONCheckpoint(opts, "citations", filepath.Join(opts.ArtifactDir, "responses", "citations.json"), repairedCitations); err != nil {
+									return nil, err
 								}
 							}
 							precision = repairedPrecision
@@ -745,8 +810,8 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 					}
 				}
 				res.Precision = &precision
-				if data, jerr := json.MarshalIndent(precision, "", "  "); jerr == nil {
-					_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "precision.json"), data, 0o644)
+				if err := writeJSONCheckpoint(opts, "precision", filepath.Join(opts.ArtifactDir, "responses", "precision.json"), precision); err != nil {
+					return nil, err
 				}
 				slog.InfoContext(ctx, "digest precision", "supported", precision.Supported, "total", precision.Total, "unsupported", len(precision.Unsupported))
 			}
@@ -773,10 +838,12 @@ func Run(ctx context.Context, rc RoleCompleters, p *prompts.Set, source string, 
 		final += b.String()
 	}
 
-	if err := fsutil.WriteFile(opts.OutPath, []byte(final), 0o644); err != nil {
-		return nil, fmt.Errorf("digest: writing output: %w", err)
+	if err := writeCheckpoint(opts, "final output", opts.OutPath, []byte(final)); err != nil {
+		return nil, err
 	}
-	_ = fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "rewrite.md"), []byte(final), 0o644)
+	if err := writeCheckpoint(opts, "final artifact", filepath.Join(opts.ArtifactDir, "responses", "rewrite.md"), []byte(final)); err != nil {
+		return nil, fmt.Errorf("digest: final artifact copy failed; durable --out survives at %q: %w", opts.OutPath, err)
+	}
 	if shouldStoreArticle(opts, res) {
 		opts.Cache.Store(opts.CacheKey, final, CacheMeta{Coverage: res.Coverage, Citations: res.Citations, Precision: res.Precision, Words: res.Words})
 	}
@@ -891,8 +958,8 @@ func resolveFacts(ctx context.Context, llm, escalation Completer, p *prompts.Set
 	if strings.TrimSpace(ex.facts) == "" {
 		return "", fmt.Errorf("digest: no facts extracted (all %d chunks returned empty)", ex.count)
 	}
-	if err := fsutil.WriteFile(in.opts.FactsPath, []byte(ex.facts), 0o644); err != nil {
-		return "", fmt.Errorf("digest: writing compiled facts: %w", err)
+	if err := writeCheckpoint(in.opts, "compiled facts", in.opts.FactsPath, []byte(ex.facts)); err != nil {
+		return "", err
 	}
 	return ex.facts, nil
 }
@@ -912,8 +979,8 @@ func researchAndCompile(ctx context.Context, llm, escalation Completer, p *promp
 
 	for i, chunk := range chunks {
 		id := fmt.Sprintf("chunk-%03d", i+1)
-		if werr := fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "chunks", id+".md"), []byte(chunk.Text), 0o644); werr != nil {
-			return extraction{}, fmt.Errorf("digest: writing chunk %s: %w", id, werr)
+		if werr := writeCheckpoint(opts, "source chunk", filepath.Join(opts.ArtifactDir, "chunks", id+".md"), []byte(chunk.Text)); werr != nil {
+			return extraction{}, werr
 		}
 	}
 
@@ -953,6 +1020,9 @@ func researchAndCompile(ctx context.Context, llm, escalation Completer, p *promp
 			if opts.Resume {
 				if data, ok := readReusableArtifact(responsePath, "research"); ok {
 					outs[i] = strings.TrimSpace(data)
+					if werr := writeCheckpoint(opts, "resumed research response", responsePath, []byte(outs[i])); werr != nil {
+						return werr
+					}
 					reusedFlag[i] = true
 					ledger.RecordZeroDelta("research", id, "reuse", time.Time{}, nil)
 					slog.InfoContext(gctx, "digest research done", "chunk", id, "n", i+1, "total", total)
@@ -964,7 +1034,9 @@ func researchAndCompile(ctx context.Context, llm, escalation Completer, p *promp
 				if data, ok := opts.ResearchCache.Load(cacheText); ok {
 					outs[i] = strings.TrimSpace(data)
 					reusedFlag[i] = true
-					_ = fsutil.WriteFile(responsePath, []byte(outs[i]), 0o644)
+					if werr := writeCheckpoint(opts, "cached research response", responsePath, []byte(outs[i])); werr != nil {
+						return werr
+					}
 					ledger.RecordZeroDelta("research", id, "cache", time.Time{}, nil)
 					slog.InfoContext(gctx, "digest research cache hit", "chunk", id, "n", i+1, "total", total)
 					return nil
@@ -991,8 +1063,16 @@ func researchAndCompile(ctx context.Context, llm, escalation Completer, p *promp
 				failedFlag[i] = true
 				return nil
 			}
-			out = maybeEscalateResearch(gctx, escalation, p, headerBlock, id, chunk.Text, out, opts, ledger)
-			_ = fsutil.WriteFile(responsePath, []byte(out), 0o644)
+			out, cerr = maybeEscalateResearch(researchEscalationInput{
+				ctx: gctx, llm: escalation, prompts: p, headerBlock: headerBlock,
+				id: id, chunkText: chunk.Text, baseOut: out, options: opts, ledger: ledger,
+			})
+			if cerr != nil {
+				return fmt.Errorf("digest: research escalation %s: %w", id, cerr)
+			}
+			if werr := writeCheckpoint(opts, "research response", responsePath, []byte(out)); werr != nil {
+				return werr
+			}
 			if opts.ResearchCache != nil {
 				opts.ResearchCache.Store(researchCacheText(headerBlock, chunk.Text), out)
 			}
@@ -1012,14 +1092,29 @@ func researchAndCompile(ctx context.Context, llm, escalation Completer, p *promp
 	return extraction{facts: facts, count: total, failed: failed, reused: reused}, nil
 }
 
-func maybeEscalateResearch(ctx context.Context, llm Completer, p *prompts.Set, headerBlock, id, chunkText, baseOut string, opts Options, ledger *runLedger) string {
+type researchEscalationInput struct {
+	ctx         context.Context
+	llm         Completer
+	prompts     *prompts.Set
+	headerBlock string
+	id          string
+	chunkText   string
+	baseOut     string
+	options     Options
+	ledger      *runLedger
+}
+
+func maybeEscalateResearch(in researchEscalationInput) (string, error) {
+	ctx, llm, p := in.ctx, in.llm, in.prompts
+	headerBlock, id, chunkText, baseOut := in.headerBlock, in.id, in.chunkText, in.baseOut
+	opts, ledger := in.options, in.ledger
 	baseOut = strings.TrimSpace(baseOut)
 	if !opts.Cascade || opts.CascadeThreshold <= 0 || llm == nil {
-		return baseOut
+		return baseOut, nil
 	}
 	cov := extractscore.SpecificsCoverage(chunkText, baseOut)
 	if cov.Total < 5 || float64(cov.Covered)/float64(cov.Total) >= opts.CascadeThreshold {
-		return baseOut
+		return baseOut, nil
 	}
 	started := time.Now()
 	out, err := complete(ctx, llm, headerBlock+p.RenderResearch(id, chunkText), opts.Timeout)
@@ -1027,14 +1122,17 @@ func maybeEscalateResearch(ctx context.Context, llm Completer, p *prompts.Set, h
 		ledger.RecordZeroDelta("research", id, "escalate", started, err)
 	}
 	if err != nil {
+		if ai.IsSystemic(err) {
+			return baseOut, err
+		}
 		slog.WarnContext(ctx, "digest research escalation skipped", "chunk", id, "err", err)
-		return baseOut
+		return baseOut, nil
 	}
 	out = strings.TrimSpace(out)
 	if out == "" {
-		return baseOut
+		return baseOut, nil
 	}
-	return baseOut + "\n" + out
+	return baseOut + "\n" + out, nil
 }
 
 func resolveDocHeader(ctx context.Context, llm Completer, p *prompts.Set, source, excerpt string, opts Options, ledger *runLedger, retries int, backoff time.Duration) (string, error) {
@@ -1056,7 +1154,9 @@ func resolveDocHeader(ctx context.Context, llm Completer, p *prompts.Set, source
 	if header == "" {
 		return "", errors.New("digest: doc-context returned empty output")
 	}
-	_ = fsutil.WriteFile(headerPath, []byte(header), 0o644)
+	if err := writeCheckpoint(opts, "document context", headerPath, []byte(header)); err != nil {
+		return "", err
+	}
 	return header, nil
 }
 

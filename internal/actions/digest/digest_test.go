@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dotcommander/distill/internal/ai"
+	"github.com/dotcommander/distill/internal/extractscore"
 	"github.com/dotcommander/distill/internal/prompts"
 )
 
@@ -30,6 +31,19 @@ type fakeLLM struct {
 	precision        string
 	precisionRepair  string
 	precisionRecords []string
+}
+
+type budgetRetryLLM struct {
+	budget *ai.RequestBudget
+	calls  int
+}
+
+func (l *budgetRetryLLM) Complete(_ context.Context, _ string) (string, error) {
+	if err := l.budget.Acquire("text"); err != nil {
+		return "", err
+	}
+	l.calls++
+	return "", transientErr
 }
 
 func (f *fakeLLM) Complete(_ context.Context, prompt string) (string, error) {
@@ -931,6 +945,42 @@ func TestResearchEmptyResponseIsSoftSkip(t *testing.T) {
 // transientErr is a generic (non-systemic) error: retryComplete must retry it.
 var transientErr = errors.New("transient blip")
 
+func TestRetryCompleteReacquiresRequestBudget(t *testing.T) {
+	budget, err := ai.NewRequestBudget(2)
+	if err != nil {
+		t.Fatalf("new budget: %v", err)
+	}
+	llm := &budgetRetryLLM{budget: budget}
+	_, err = retryComplete(context.Background(), "retry", llm, "prompt", 0, 2, time.Nanosecond)
+	if !errors.Is(err, transientErr) {
+		t.Fatalf("retryComplete error = %v, want transient error", err)
+	}
+	if llm.calls != 2 || budget.Used() != 2 {
+		t.Fatalf("calls=%d budget=%d, want two application attempts", llm.calls, budget.Used())
+	}
+}
+
+type exhaustedLLM struct{}
+
+func (exhaustedLLM) Complete(_ context.Context, _ string) (string, error) {
+	return "", ai.ErrRequestBudgetExhausted
+}
+
+func TestBestEffortFallbacksPropagateBudgetExhaustion(t *testing.T) {
+	p := testPrompts()
+	opts := Options{Cascade: true, CascadeThreshold: 1}
+	if _, err := maybeEscalateResearch(researchEscalationInput{ctx: context.Background(), llm: exhaustedLLM{}, prompts: p, id: "chunk-001", chunkText: "Alpha 2020. Beta 2021. Gamma 2022. Delta 2023. Epsilon 2024.", baseOut: "nothing captured", options: opts}); !errors.Is(err, ai.ErrRequestBudgetExhausted) {
+		t.Fatalf("cascade error = %v, want budget exhaustion", err)
+	}
+	repair := repairInput{ctx: context.Background(), llm: exhaustedLLM{}, prompts: p, attempts: 1}
+	if _, _, err := repairMissing(repair, "Acme 42", "article", extractscore.SpecificsResult{Missing: []string{"42"}}); !errors.Is(err, ai.ErrRequestBudgetExhausted) {
+		t.Fatalf("coverage repair error = %v, want budget exhaustion", err)
+	}
+	if _, _, err := repairMissingCited(repair, []factUnit{{id: 1, line: "Acme 42"}}, "article", CitationResult{MissingIDs: []int{1}}); !errors.Is(err, ai.ErrRequestBudgetExhausted) {
+		t.Fatalf("citation repair error = %v, want budget exhaustion", err)
+	}
+}
+
 // flakySectionLLM fails the first failN SECTION calls with a transient error,
 // then succeeds; other roles always succeed. Exercises retry-then-recover.
 type flakySectionLLM struct {
@@ -1455,7 +1505,7 @@ func TestRunLedgerRecordsTokenUsage(t *testing.T) {
 	}
 }
 
-func TestResumeInvalidatedWhenMarkerMissing(t *testing.T) {
+func TestRunRejectsMissingMarkerWithoutCallingProviderOrChangingArtifacts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	artifactDir := filepath.Join(dir, "artifacts")
@@ -1475,26 +1525,26 @@ func TestResumeInvalidatedWhenMarkerMissing(t *testing.T) {
 		ChunkSize:   1000,
 		Resume:      true,
 	}
-	res, err := Run(context.Background(), RoleCompleters{Research: llm, Fuse: llm, Outline: llm, Section: llm, Edit: llm}, testPrompts(), "# One\n\nbody", opts)
+	_, err := Run(context.Background(), RoleCompleters{Research: llm, Fuse: llm, Outline: llm, Section: llm, Edit: llm}, testPrompts(), "# One\n\nbody", opts)
+	if err == nil || !strings.Contains(err.Error(), "source marker missing") {
+		t.Fatalf("Run error = %v, want missing marker refusal", err)
+	}
+	if llm.calls != 0 {
+		t.Fatalf("invalid binding called provider %d times", llm.calls)
+	}
+	got, err := os.ReadFile(stale)
 	if err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("read sentinel artifact: %v", err)
 	}
-	if res.ReusedChunks != 0 || res.ReusedFacts {
-		t.Fatalf("missing marker must disable reuse, got %+v", res)
+	if string(got) != "- stale fact from another source" {
+		t.Fatalf("sentinel artifact changed: %q", got)
 	}
-	facts, err := os.ReadFile(opts.FactsPath)
-	if err != nil {
-		t.Fatalf("read facts: %v", err)
-	}
-	if strings.Contains(string(facts), "stale fact") {
-		t.Fatalf("stale artifact leaked into compiled facts: %s", facts)
-	}
-	if _, err := os.Stat(filepath.Join(artifactDir, markerName)); err != nil {
-		t.Fatalf("marker not stamped after invalidation: %v", err)
+	if _, err := os.Stat(filepath.Join(artifactDir, markerName)); !os.IsNotExist(err) {
+		t.Fatalf("missing marker was created: %v", err)
 	}
 }
 
-func TestResumeInvalidatedWhenSourceChanged(t *testing.T) {
+func TestRunRejectsMismatchedMarkerWithoutCallingProviderOrChangingArtifacts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	artifactDir := filepath.Join(dir, "artifacts")
@@ -1517,22 +1567,22 @@ func TestResumeInvalidatedWhenSourceChanged(t *testing.T) {
 		ChunkSize:   1000,
 		Resume:      true,
 	}
-	res, err := Run(context.Background(), RoleCompleters{Research: llm, Fuse: llm, Outline: llm, Section: llm, Edit: llm}, testPrompts(), "# New\n\nnew body", opts)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	_, err := Run(context.Background(), RoleCompleters{Research: llm, Fuse: llm, Outline: llm, Section: llm, Edit: llm}, testPrompts(), "# New\n\nnew body", opts)
+	if err == nil || !strings.Contains(err.Error(), "source marker mismatch") {
+		t.Fatalf("Run error = %v, want mismatched marker refusal", err)
 	}
-	if res.ReusedFacts || res.ReusedChunks != 0 {
-		t.Fatalf("mismatched marker must disable reuse, got %+v", res)
+	if llm.calls != 0 {
+		t.Fatalf("invalid binding called provider %d times", llm.calls)
 	}
 	facts, err := os.ReadFile(staleFacts)
 	if err != nil {
 		t.Fatalf("read facts: %v", err)
 	}
-	if strings.Contains(string(facts), "old-source fact") {
-		t.Fatalf("stale facts survived invalidation: %s", facts)
+	if string(facts) != "## chunk-001\n\n- old-source fact" {
+		t.Fatalf("stale facts changed: %s", facts)
 	}
-	if !ArtifactsMatchSource(artifactDir, "# New\n\nnew body", 1000, 0) {
-		t.Fatal("marker not rebound to the new source")
+	if ArtifactsMatchSource(artifactDir, "# New\n\nnew body", 1000, 0) {
+		t.Fatal("marker was rebound to the new source")
 	}
 }
 
@@ -1575,7 +1625,7 @@ func TestResumeIgnoresFactsOutsideArtifactDir(t *testing.T) {
 	}
 }
 
-func TestReuseFactsExplicitBypassesMarker(t *testing.T) {
+func TestReuseFactsRejectsMismatchedMarkerWithoutChangingExternalFacts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	artifactDir := filepath.Join(dir, "artifacts")
@@ -1585,7 +1635,7 @@ func TestReuseFactsExplicitBypassesMarker(t *testing.T) {
 	if err := writeRunMarker(artifactDir, markerFor("# Other\n\nsource", 6000, 0)); err != nil {
 		t.Fatalf("seed marker: %v", err)
 	}
-	factsPath := filepath.Join(artifactDir, "facts.compiled.md")
+	factsPath := filepath.Join(dir, "explicit-facts.md")
 	if err := os.WriteFile(factsPath, []byte("## chunk-001\n\n- kept fact"), 0o644); err != nil {
 		t.Fatalf("seed facts: %v", err)
 	}
@@ -1598,18 +1648,19 @@ func TestReuseFactsExplicitBypassesMarker(t *testing.T) {
 		ChunkSize:   6000,
 		ReuseFacts:  true,
 	}
-	res, err := Run(context.Background(), RoleCompleters{Research: llm, Fuse: llm, Outline: llm, Section: llm, Edit: llm}, testPrompts(), "ignored source", opts)
+	_, err := Run(context.Background(), RoleCompleters{Research: llm, Fuse: llm, Outline: llm, Section: llm, Edit: llm}, testPrompts(), "ignored source", opts)
+	if err == nil || !strings.Contains(err.Error(), "source marker mismatch") {
+		t.Fatalf("Run error = %v, want mismatched marker refusal", err)
+	}
+	if llm.calls != 0 {
+		t.Fatalf("invalid binding called provider %d times", llm.calls)
+	}
+	facts, err := os.ReadFile(factsPath)
 	if err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("read explicit facts: %v", err)
 	}
-	if !res.ReusedFacts {
-		t.Fatal("explicit --reuse-facts must be honored regardless of the marker")
-	}
-	if !res.UnverifiedFacts {
-		t.Fatal("facts reused under a mismatched marker must be flagged unverified")
-	}
-	if _, err := os.Stat(factsPath); err != nil {
-		t.Fatalf("explicitly reused facts file must never be deleted: %v", err)
+	if string(facts) != "## chunk-001\n\n- kept fact" {
+		t.Fatalf("explicit facts changed: %q", facts)
 	}
 }
 
@@ -1691,7 +1742,10 @@ func TestRunSkipsStoreOnUnverifiedFactsReuse(t *testing.T) {
 	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
 		t.Fatalf("mkdir artifacts: %v", err)
 	}
-	factsPath := filepath.Join(artifactDir, "facts.compiled.md")
+	if err := writeRunMarker(artifactDir, markerFor("ignored source", 6000, 0)); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+	factsPath := filepath.Join(dir, "facts.compiled.md")
 	if err := os.WriteFile(factsPath, []byte("## chunk-001\n\n- kept fact"), 0o644); err != nil {
 		t.Fatalf("seed facts: %v", err)
 	}

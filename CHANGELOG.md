@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.1 (2026-07-29)
+
+### Fixes
+
+- Refuse unsafe non-empty digest artifact directories instead of rebinding them.
+- Enforce `--max-calls` as a shared text-and-embedding request budget and report
+  finite actual usage.
+- Preflight every evaluator chunk corpus and reject malformed precision verdict
+  index sets before trusting results.
+- Preserve identity-bearing extraction values and document the explicit cascade
+  escalation and all-role model-pinning contracts.
+
 ## v0.2.0 (2026-07-29)
 
 ### Features

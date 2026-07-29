@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -50,10 +51,7 @@ func runEval(cmd *runContext, f *evalFlags) error {
 	if err != nil {
 		return err
 	}
-	outDir, err := resolveArtifactDir(f.out)
-	if err != nil {
-		return err
-	}
+	outDir := resolveEvalOutputDir(f.out)
 
 	results, err := eval.Run(cmd.Context(), judge, p, eval.Options{
 		ChunksDir:     f.chunks,
@@ -72,6 +70,15 @@ func runEval(cmd *runContext, f *evalFlags) error {
 	}
 	slog.InfoContext(cmd.Context(), "eval done", "candidates", len(results), "duration", time.Since(start))
 	return nil
+}
+
+// resolveEvalOutputDir selects the output path without creating it. The
+// evaluator owns directory creation after its complete corpus preflight passes.
+func resolveEvalOutputDir(dir string) string {
+	if dir != "" {
+		return dir
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("distill-eval-%d", time.Now().UnixNano()))
 }
 
 // splitCandidates parses the comma-separated --candidates value into dirs.

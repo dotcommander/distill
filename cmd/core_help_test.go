@@ -31,6 +31,9 @@ func TestCoreCommandHelpPreservesCobraProse(t *testing.T) {
 			"Distill a long document into a cohesive rewrite without any single model",
 			"Hard Claude token ceiling per chunk; oversize character chunks are split (0 disables)",
 			"Reuse complete artifacts from a previous run in --artifacts to avoid repeated paid calls",
+			"absent, empty, or exactly source-marker-bound only",
+			"Pin every text role, including precision judge and cascade escalation",
+			"Hard aggregate text-plus-embedding request ceiling",
 			"score    Deterministic review of digest drafts (no LLM)",
 		}},
 	}
@@ -47,6 +50,19 @@ func TestCoreCommandHelpPreservesCobraProse(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEvalJudgeHelpStatesCorpusPreflight(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := executeEval(context.Background(), []string{"eval", "judge", "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	normalizedHelp := strings.Join(strings.Fields(stdout.String()), " ")
+	for _, want := range []string{"exact readable set required", "every set is preflighted before judging", "Before the first judge call or output write"} {
+		if !strings.Contains(normalizedHelp, strings.Join(strings.Fields(want), " ")) {
+			t.Fatalf("eval judge help missing %q:\n%s", want, stdout.String())
+		}
 	}
 }
 

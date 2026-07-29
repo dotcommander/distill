@@ -173,9 +173,10 @@ export DEEPSEEK_API_KEY=sk-...
 distill digest document.md --deepseek
 ```
 
-Uses Wormhole provider integrations and a text model (`--model` /
-`$DISTILL_MODEL`, default `z-ai/glm-5.2`, with per-role `*_model` config keys
-overriding each stage). Non-prefixed remote models use OpenRouter; DeepSeek,
+Uses Wormhole provider integrations and a text model. An explicit `--model` or
+`$DISTILL_MODEL` pins every text role for the command, including the precision
+judge and cascade escalation; otherwise per-role `*_model` config keys select
+stages (default `z-ai/glm-5.2`). Non-prefixed remote models use OpenRouter; DeepSeek,
 Z.AI/GLM, and Gemini model IDs route directly to their built-in Wormhole
 providers. Remote custom API endpoints are disabled. Pass `--local` to switch to
 the on-box Qwen profile (`http://127.0.0.1:8000/v1`), where `--base-url` /
@@ -191,7 +192,9 @@ maintenance checks.
 For the current high-quality long-document recipe, see
 `docs/polished-mode.md`. It combines cascade extraction, fact merging,
 cluster-derived outlines, temporary citations, repair, precision checks, and
-quality gates using existing `digest` flags.
+quality gates using existing `digest` flags. Cascade requires an explicit
+`research_escalation_model` because its committed default is blank; an all-role
+`--model` / `$DISTILL_MODEL` pin is the per-command alternative.
 
 Outputs: the final article (`--out`, default `<source>.distilled.md`), the
 `facts.compiled.md` checkpoint, the fused notes (`facts.fused.md`, only when
@@ -204,7 +207,7 @@ under the artifacts directory. The research, fuse, write, and editor prompts liv
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `$DISTILL_MODEL` | Top-level text model fallback; per-role `*_model` config keys override per stage (default `z-ai/glm-5.2`) |
+| `--model` | `$DISTILL_MODEL` | Pins every text role, including precision judge and cascade escalation; otherwise per-role config selects stages (default `z-ai/glm-5.2`) |
 | `--base-url` | local profile only | Local OpenAI-compatible endpoint when `--local` is set; remote custom endpoints are disabled |
 | `--local` | — | Use the on-box Qwen profile (`local_*` config keys) instead of the OpenRouter default |
 | `--deepseek` | — | Force the direct DeepSeek profile (`deepseek_*` config keys) with `$DEEPSEEK_API_KEY` |
@@ -213,15 +216,15 @@ under the artifacts directory. The research, fuse, write, and editor prompts liv
 | `--context-file` | — | Read steering context from a file (mutually exclusive with `--context`) |
 | `--out` | `<source>.distilled.md` | Final article output path |
 | `--facts` | `<artifacts>/facts.compiled.md` | Compiled-facts checkpoint path |
-| `--artifacts` | temp dir | Artifacts directory |
+| `--artifacts` | temp dir | Absent/new, empty, or exact source-marker-bound directory only; non-empty unbound or mismatched directories are refused without mutation |
 | `--chunk-size` | `6000` | Character budget per chunk (min 1000) |
 | `--max-tokens` | `4000` | `cl100k_base` preflight budget per chunk for remote profiles; local Qwen uses the character budget (`0` disables) |
 | `--concurrency` | `4` | Max parallel chunk extractions |
 | `--no-clean` / `--clean` | auto | Skip / force transcript (VTT/SRT) cleaning before distillation |
 | `--timeout` | `300` | Per-LLM-call timeout in seconds |
 | `--retries` | config, else `3` | Per-call retry attempts for outline/section/edit on transient errors |
-| `--dry-run` | `false` | Plan chunks, role models, endpoints, artifact paths, ledger path, and provider-call count without making provider calls |
-| `--max-calls` | `0` | Abort before provider calls if the planned paid-call count exceeds this ceiling |
+| `--dry-run` | `false` | Validate artifact ownership and plan chunks, role models, endpoints, and paths without making provider calls or creating an absent artifact directory |
+| `--max-calls` | `0` | Hard aggregate text-plus-embedding request ceiling (`0` unlimited); plan is advisory and finite runs report actual `request budget: used/limit` |
 | `--reuse-facts` | `false` | Reuse the facts checkpoint (skip research) |
 | `--resume` | `true` | Reuse complete artifacts from `--artifacts` to avoid repeated paid calls after an interrupted run; pass `--resume=false` to force regeneration |
 | `--fuse` | `false` | Run the fuse stage that merges per-chunk notes before writing (off by default; can time out on large inputs) |
@@ -235,8 +238,10 @@ under the artifacts directory. The research, fuse, write, and editor prompts liv
 
 Score one or more candidate extractions against a reference, chunk by chunk,
 using an LLM judge (the source chunk is ground truth; the reference is a coverage
-checklist). Useful for comparing how well different models extract facts in the
-digest pipeline.
+checklist). Before any judge call or output write, Distill requires source,
+reference, and every candidate to have the same readable `chunk-*.md` set.
+Useful for comparing how well different models extract facts in the digest
+pipeline.
 
 ```bash
 # Compare two models' extractions against a trusted reference

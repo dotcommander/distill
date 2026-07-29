@@ -78,8 +78,8 @@ type digestCommand struct {
 	Style               string   `help:"Target style for the rewrite (default from config)"`
 	Out                 string   `help:"Output path for the rewrite (default: <source>.distilled.md)"`
 	Facts               string   `help:"Path for the compiled facts checkpoint (default: <artifacts>/facts.compiled.md)"`
-	Artifacts           string   `help:"Artifacts directory (default: temp dir)"`
-	Model               string   `help:"Text model for extraction and rewrite. Falls back to $DISTILL_MODEL."`
+	Artifacts           string   `help:"Artifacts directory: absent, empty, or exactly source-marker-bound only; unbound non-empty directories are refused without mutation (default: temp dir)"`
+	Model               string   `help:"Pin every text role, including precision judge and cascade escalation; falls back to $DISTILL_MODEL."`
 	BaseURL             string   `name:"base-url" help:"Local OpenAI-compatible base URL. Remote custom API endpoints are disabled; use built-in Wormhole providers."`
 	Local               bool     `help:"Use the local model profile (local_model/local_base_url) instead of the remote OpenRouter default. The local endpoint gets $DISTILL_LOCAL_API_KEY (never $OPENAI_API_KEY)."`
 	Deepseek            bool     `help:"Use the direct DeepSeek profile (deepseek_model/deepseek_base_url) with $DEEPSEEK_API_KEY."`
@@ -88,7 +88,7 @@ type digestCommand struct {
 	Concurrency         int      `help:"Max parallel chunk extractions (default from config, else 4)"`
 	Timeout             int      `help:"Per-LLM-call timeout in seconds (default from config, else 300)"`
 	Retries             int      `help:"Per-call retry attempts for outline/section/edit on transient errors (default from config, else 3)"`
-	MaxCalls            int      `name:"max-calls" help:"Abort before provider calls if the planned paid-call count exceeds this ceiling (0 disables)"`
+	MaxCalls            int      `name:"max-calls" help:"Hard aggregate text-plus-embedding request ceiling (0 unlimited); actual usage is reported and the displayed plan is advisory"`
 	ReuseFacts          bool     `name:"reuse-facts" help:"Reuse an existing compiled-facts checkpoint (skip extraction)"`
 	NoClean             bool     `name:"no-clean" help:"Do not auto-clean detected transcript (VTT/SRT) input"`
 	Clean               bool     `help:"Force transcript cleaning even when format detection is unsure"`
@@ -241,6 +241,9 @@ func restoreCommandHelp(rendered, command string) string {
 	command = strings.TrimSpace(command)
 	key := prefix + command
 	meta, ok := commandHelpOverrides[key]
+	if !ok {
+		meta, ok = commandHelpCatalogOverrides[key]
+	}
 	if !ok {
 		meta, ok = commandHelpCatalog[key]
 	}

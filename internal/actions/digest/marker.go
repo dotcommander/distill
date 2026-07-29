@@ -1,12 +1,10 @@
 package digest
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,25 +44,51 @@ func markerFor(source string, chunkSize, maxTokens int) runMarker {
 	}
 }
 
-// readRunMarker returns the marker stored in dir; ok is false when the marker
-// is absent or unparsable.
-func readRunMarker(dir string) (m runMarker, ok bool) {
-	data, err := os.ReadFile(filepath.Join(dir, markerName))
-	if err != nil {
-		return runMarker{}, false
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return runMarker{}, false
-	}
-	return m, true
-}
-
 func writeRunMarker(dir string, m runMarker) error {
 	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("digest: encoding artifact marker: %w", err)
 	}
 	return fsutil.WriteFile(filepath.Join(dir, markerName), data, 0o644)
+}
+
+// claimRunMarker installs a fully written binding without replacing an
+// existing claim. The private temporary inode lives inside artifactDir, so the
+// final hard-link is an atomic no-replace publication on the same filesystem
+// without requiring write access to the directory's parent.
+func claimRunMarker(dir string, m runMarker) error {
+	data, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("digest: encoding artifact marker: %w", err)
+	}
+	if mkdirErr := os.MkdirAll(dir, 0o750); mkdirErr != nil {
+		return fmt.Errorf("digest: creating artifact directory: %w", mkdirErr)
+	}
+	f, err := os.CreateTemp(dir, ".distill-marker-*")
+	if err != nil {
+		return fmt.Errorf("digest: creating artifact marker claim: %w", err)
+	}
+	tempPath := f.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("digest: writing artifact marker: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("digest: syncing artifact marker: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("digest: closing artifact marker: %w", err)
+	}
+	if err := os.Link(tempPath, filepath.Join(dir, markerName)); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
 
 // ArtifactsMatchSource reports whether artifactDir carries a marker binding
@@ -74,8 +98,8 @@ func ArtifactsMatchSource(artifactDir, source string, chunkSize, maxTokens int) 
 	if artifactDir == "" {
 		return false
 	}
-	got, ok := readRunMarker(artifactDir)
-	return ok && got == markerFor(source, chunkSize, maxTokens)
+	reuseOK, err := ValidateArtifactBinding(artifactDir, source, chunkSize, maxTokens)
+	return err == nil && reuseOK
 }
 
 // pathWithin reports whether path lies inside dir (or equals it) after both
@@ -99,45 +123,103 @@ func pathWithin(dir, path string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// ensureArtifactBinding verifies that ArtifactDir's artifacts were produced
-// from source. On a missing or mismatched marker it removes the
-// pipeline-generated artifacts (responses/, chunks/, facts.fused.md, and the
-// compiled facts when they live inside ArtifactDir and are not explicitly
-// reused), then stamps the current marker — the marker may only ever exist
-// alongside artifacts written under it, so invalidation is delete-then-stamp.
-// reuseOK reports whether artifact reuse is safe this run. A deletion or
-// marker-write failure is a hard error: proceeding would let a future resume
-// pick up stale artifacts under a fresh marker.
-func ensureArtifactBinding(ctx context.Context, opts Options, source string) (reuseOK bool, err error) {
-	if opts.ArtifactDir == "" {
+type artifactBindingState uint8
+
+const (
+	artifactBindingAbsent artifactBindingState = iota
+	artifactBindingEmpty
+	artifactBindingMatch
+)
+
+// ValidateArtifactBinding reports whether artifact reuse is safe for source.
+// It never creates, removes, or changes the artifact directory. An absent or
+// empty directory is valid for a new run but has no reusable artifacts.
+func ValidateArtifactBinding(artifactDir, source string, chunkSize, maxTokens int) (reuseOK bool, err error) {
+	if artifactDir == "" {
 		return false, nil
 	}
-	want := markerFor(source, opts.ChunkSize, opts.MaxTokens)
-	got, ok := readRunMarker(opts.ArtifactDir)
-	if ok && got == want {
+	state, err := classifyArtifactBinding(artifactDir, markerFor(source, chunkSize, maxTokens))
+	if err != nil {
+		return false, err
+	}
+	return state == artifactBindingMatch, nil
+}
+
+// PrepareArtifactBinding validates artifact ownership and, only for an absent
+// or empty directory, stamps the current marker. Existing non-empty
+// directories must already have an exact matching marker; they are never
+// modified on an invalid binding.
+func PrepareArtifactBinding(artifactDir, source string, chunkSize, maxTokens int) (reuseOK bool, err error) {
+	if artifactDir == "" {
+		return false, nil
+	}
+	want := markerFor(source, chunkSize, maxTokens)
+	state, err := classifyArtifactBinding(artifactDir, want)
+	if err != nil {
+		return false, err
+	}
+	if state == artifactBindingMatch {
 		return true, nil
 	}
-	reason := "missing"
-	if ok {
-		reason = "mismatched"
-	}
-	slog.WarnContext(ctx, "digest: artifact dir not bound to current source; invalidating artifacts", "dir", opts.ArtifactDir, "marker", reason)
-	for _, sub := range []string{"responses", "chunks"} {
-		if rerr := os.RemoveAll(filepath.Join(opts.ArtifactDir, sub)); rerr != nil {
-			return false, fmt.Errorf("digest: invalidating artifacts %s: %w", sub, rerr)
+	if err := claimRunMarker(artifactDir, want); err != nil {
+		if os.IsExist(err) {
+			state, classifyErr := classifyArtifactBinding(artifactDir, want)
+			if classifyErr != nil {
+				return false, classifyErr
+			}
+			return state == artifactBindingMatch, nil
 		}
-	}
-	fused := filepath.Join(opts.ArtifactDir, "facts.fused.md")
-	if rerr := os.Remove(fused); rerr != nil && !os.IsNotExist(rerr) {
-		return false, fmt.Errorf("digest: invalidating artifact %s: %w", fused, rerr)
-	}
-	if !opts.ReuseFacts && pathWithin(opts.ArtifactDir, opts.FactsPath) {
-		if rerr := os.Remove(opts.FactsPath); rerr != nil && !os.IsNotExist(rerr) {
-			return false, fmt.Errorf("digest: invalidating compiled facts %s: %w", opts.FactsPath, rerr)
-		}
-	}
-	if werr := writeRunMarker(opts.ArtifactDir, want); werr != nil {
-		return false, werr
+		return false, fmt.Errorf("digest: writing artifact marker in %q: %w", artifactDir, err)
 	}
 	return false, nil
+}
+
+// classifyArtifactBinding is the shared fail-closed classifier behind
+// validation and preparation. It makes no filesystem changes.
+func classifyArtifactBinding(artifactDir string, want runMarker) (artifactBindingState, error) {
+	info, err := os.Stat(artifactDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return artifactBindingAbsent, nil
+		}
+		return 0, fmt.Errorf("digest: artifacts %q: stat directory: %w", artifactDir, err)
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("digest: artifacts %q: not a directory; refusing to modify non-empty directory", artifactDir)
+	}
+	entries, err := os.ReadDir(artifactDir)
+	if err != nil {
+		return 0, fmt.Errorf("digest: artifacts %q: read directory: %w", artifactDir, err)
+	}
+	if len(entries) == 0 {
+		return artifactBindingEmpty, nil
+	}
+
+	markerPath := filepath.Join(artifactDir, markerName)
+	markerInfo, err := os.Lstat(markerPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, invalidArtifactBinding(artifactDir, "missing")
+		}
+		return 0, invalidArtifactBinding(artifactDir, "unreadable")
+	}
+	if !markerInfo.Mode().IsRegular() {
+		return 0, invalidArtifactBinding(artifactDir, "not a regular file")
+	}
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		return 0, invalidArtifactBinding(artifactDir, "unreadable")
+	}
+	var got runMarker
+	if err := json.Unmarshal(data, &got); err != nil {
+		return 0, invalidArtifactBinding(artifactDir, "corrupt")
+	}
+	if got != want {
+		return 0, invalidArtifactBinding(artifactDir, "mismatch")
+	}
+	return artifactBindingMatch, nil
+}
+
+func invalidArtifactBinding(artifactDir, reason string) error {
+	return fmt.Errorf("digest: artifacts %q: source marker %s; refusing to modify non-empty directory", artifactDir, reason)
 }

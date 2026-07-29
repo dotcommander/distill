@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dotcommander/distill/internal/fsutil"
 	"github.com/dotcommander/distill/internal/prompts"
 )
 
@@ -228,8 +227,8 @@ func writeMergeArtifacts(opts Options, res mergeResult) error {
 	if opts.ArtifactDir == "" {
 		return nil
 	}
-	if err := fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "facts.merged.md"), []byte(res.Facts), 0o644); err != nil {
-		return fmt.Errorf("digest: writing merged facts: %w", err)
+	if err := writeCheckpoint(opts, "merged facts", filepath.Join(opts.ArtifactDir, "responses", "facts.merged.md"), []byte(res.Facts)); err != nil {
+		return err
 	}
 	if len(res.Contradictions) == 0 {
 		return nil
@@ -241,7 +240,7 @@ func writeMergeArtifacts(opts Options, res mergeResult) error {
 		}
 		fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(c))
 	}
-	return fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "contradictions.md"), []byte(strings.TrimSpace(b.String())), 0o644)
+	return writeCheckpoint(opts, "contradictions", filepath.Join(opts.ArtifactDir, "responses", "contradictions.md"), []byte(strings.TrimSpace(b.String())))
 }
 
 func synthesizeOutlineFromClusters(ctx context.Context, llm Completer, p *prompts.Set, units []factUnit, clusters []factCluster, opts Options, ledger *runLedger) (string, error) {

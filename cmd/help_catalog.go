@@ -34,3 +34,24 @@ var commandHelpCatalog = map[string]commandHelp{
 	"eval:models rankings show":  {Short: "Print the current per-role model picks from config", Long: "", Example: "", Flags: map[string]string{"local": "Use the local model profile instead of the remote OpenRouter default."}},
 	"eval:models trace-go":       {Short: "Rank models by exact stdout prediction on deterministic Go programs", Long: "Run a roster of models over trusted single-file Go programs and score the\nlast non-empty model output line against byte-exact stdout gold. The fixture\nprograms are executed locally to verify or generate gold; model output is never\nexecuted. Model calls use greedy decoding (temperature 0). Use only trusted\nfixtures. Task progress is printed as each model call completes, and HTML reports\ninclude per-task predictions/errors.", Example: "", Flags: map[string]string{"base-url": "Local OpenAI-compatible base URL; remote custom endpoints are disabled", "concurrency": "Max concurrent per-task model calls", "deepseek": "Use the direct DeepSeek profile with $DEEPSEEK_API_KEY.", "fixtures": "Trace fixture JSON ({tasks})", "local": "Use the local model profile instead of the remote OpenRouter default.", "models": "Comma-separated model roster [required]", "only": "Comma-separated task IDs to run (default: all tasks)", "out": "Write a self-contained HTML routing report to this path", "skip": "Comma-separated task IDs to skip after --only is applied", "task-timeout": "Per-task model-call timeout in seconds (0 = no timeout)", "timeout": "Per-model timeout in seconds (0 = no timeout)", "verify-timeout": "Per-fixture go-run timeout in seconds (0 = no timeout)"}},
 }
+
+// commandHelpCatalogOverrides corrects legacy catalog text while retaining the
+// generated catalog as a reference for commands that have no contract update.
+var commandHelpCatalogOverrides = map[string]commandHelp{
+	"distill:digest": {
+		Long: "Distill a long document into a cohesive rewrite without any single model\ncall holding the whole source: chunk the document, extract atomic facts from\neach chunk, compile them, then rewrite the compiled facts in a target style.\n\nArtifacts are fail closed: --artifacts accepts only an absent/new directory, an\nempty directory, or one exactly bound to this source marker. A non-empty\nunbound or mismatched directory is refused without mutation.\n\n--max-calls is a hard aggregate text-plus-embedding request ceiling (0 is\nunlimited). Its displayed plan is advisory; finite runs report actual request\nusage. An explicit --model or $DISTILL_MODEL pins every text role, including\nthe precision judge and cascade escalation.\n\nPathspecs may be files, directories, or globs. A directory containing\nmanifest.json is read in manifest chunk order; unlisted Markdown files are\nignored. Other directories retain the *.md behavior. Multiple matched files are\ncombined into one source with file-boundary headings. Use - to read stdin.\n\nRequires a text model (--model / $DISTILL_MODEL) that resolves to a built-in\nWormhole provider, plus the matching provider API key. --base-url is local-only.",
+		Flags: map[string]string{
+			"artifacts": "Artifacts directory: absent, empty, or exact source-marker-bound only; unbound non-empty directories are refused without mutation (default: temp dir)",
+			"max-calls": "Hard aggregate text-plus-embedding request ceiling (0 unlimited); actual usage is reported and the displayed plan is advisory",
+			"model":     "Pin every text role, including precision judge and cascade escalation; falls back to $DISTILL_MODEL.",
+		},
+	},
+	"eval:eval judge": {
+		Long: "Judge one or more candidate extraction sets against a reference, chunk by\nchunk, using the source chunks as ground truth. Before the first judge call or\noutput write, every source, reference, and candidate corpus must have the exact\nsame readable chunk-*.md set. Produces per-candidate judgments.jsonl +\nsummary.md and a ranked INDEX.md (precision/recall/F1).\n\nInputs are the artifact directories produced by distill digest runs:\n  --chunks      the source chunks dir (chunk-NNN.md)\n  --reference   a trusted extraction's responses dir\n  --candidates  comma-separated candidate response dirs to score\n\nThe judge is the built-in OpenAI-compatible client by default; pass --judge-cmd\nto judge with an external CLI instead (e.g. --judge-cmd \"codex exec -\").",
+		Flags: map[string]string{
+			"chunks":     "Source chunks directory (chunk-NNN.md); exact readable set required [required]",
+			"reference":  "Reference extraction responses directory; exact readable source set required [required]",
+			"candidates": "Comma-separated candidate response directories; every set is preflighted before judging [required]",
+		},
+	},
+}

@@ -3,9 +3,9 @@ package cmd
 import "context"
 
 type evalCommand struct {
-	Chunks       string `help:"Source chunks directory (chunk-NNN.md) [required]"`
-	Reference    string `help:"Reference extraction responses directory [required]"`
-	Candidates   string `help:"Comma-separated candidate response directories [required]"`
+	Chunks       string `help:"Source chunks directory (chunk-NNN.md); exact readable set required [required]"`
+	Reference    string `help:"Reference extraction responses directory; exact readable source set required [required]"`
+	Candidates   string `help:"Comma-separated candidate response directories; every set is preflighted before judging [required]"`
 	JudgeModel   string `name:"judge-model" help:"Judge model for the built-in endpoint (falls back to $DISTILL_MODEL or config)"`
 	JudgeCmd     string `name:"judge-cmd" help:"External judge command run with the prompt on stdin (e.g. \"codex exec -\"). Overrides --judge-model/--base-url."`
 	BaseURL      string `name:"base-url" help:"Local OpenAI-compatible base URL; remote custom endpoints are disabled"`

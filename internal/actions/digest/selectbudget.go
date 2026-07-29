@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
-
-	"github.com/dotcommander/distill/internal/fsutil"
 )
 
 func selectTargetFacts(ctx context.Context, embedder BatchEmbedder, facts string, target int, opts Options, ledger *runLedger) (selected string, kept, total int, err error) {
@@ -38,8 +36,8 @@ func selectTargetFacts(ctx context.Context, embedder BatchEmbedder, facts string
 	selected = rebuildFacts(facts, entries, nil, skip)
 	kept = len(selectedIdx)
 	if opts.ArtifactDir != "" {
-		if werr := fsutil.WriteFile(filepath.Join(opts.ArtifactDir, "responses", "facts.selected.md"), []byte(selected), 0o644); werr != nil {
-			return "", 0, total, fmt.Errorf("digest: writing selected facts: %w", werr)
+		if werr := writeCheckpoint(opts, "selected facts", filepath.Join(opts.ArtifactDir, "responses", "facts.selected.md"), []byte(selected)); werr != nil {
+			return "", 0, total, werr
 		}
 	}
 	if ledger != nil {

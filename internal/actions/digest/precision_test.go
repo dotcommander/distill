@@ -3,6 +3,7 @@ package digest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,10 @@ import (
 func TestPrecisionBatchesKeepFactsPrefix(t *testing.T) {
 	t.Parallel()
 	llm := &fakeLLM{
-		precision: `{"verdicts":[{"i":1,"supported":true,"reason":""},{"i":2,"supported":false,"reason":"unsupported"},{"i":3,"supported":true,"reason":""}]}`,
+		precisionRecords: []string{
+			`{"verdicts":[{"i":1,"supported":true,"reason":""},{"i":2,"supported":false,"reason":"unsupported"}]}`,
+			`{"verdicts":[{"i":3,"supported":true,"reason":""}]}`,
+		},
 	}
 	p := testPrompts()
 	res, err := checkPrecision(context.Background(), llm, p, "- fact one\n- fact two", []string{"One.", "Two.", "Three."}, 2, nil, 0, 1, 0)
@@ -44,6 +48,86 @@ func TestPrecisionMalformedJSONFailsClosed(t *testing.T) {
 	}
 	if res.Supported != 0 || res.Total != 2 || len(res.Unsupported) != 2 {
 		t.Fatalf("malformed JSON should mark all unsupported, got %+v", res)
+	}
+	for _, unsupported := range res.Unsupported {
+		if unsupported.Reason != "precision judge returned malformed JSON" {
+			t.Fatalf("malformed JSON reason = %q", unsupported.Reason)
+		}
+	}
+}
+
+func TestValidatePrecisionVerdictIndexes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		verdicts []precisionVerdict
+		first    int
+		last     int
+		wantErr  bool
+	}{
+		{name: "ordered", verdicts: []precisionVerdict{{Index: 4}, {Index: 5}, {Index: 6}}, first: 4, last: 6},
+		{name: "shuffled", verdicts: []precisionVerdict{{Index: 6}, {Index: 4}, {Index: 5}}, first: 4, last: 6},
+		{name: "duplicate", verdicts: []precisionVerdict{{Index: 4}, {Index: 4}, {Index: 5}}, first: 4, last: 6, wantErr: true},
+		{name: "zero", verdicts: []precisionVerdict{{Index: 0}, {Index: 4}, {Index: 5}}, first: 4, last: 6, wantErr: true},
+		{name: "negative", verdicts: []precisionVerdict{{Index: -1}, {Index: 4}, {Index: 5}}, first: 4, last: 6, wantErr: true},
+		{name: "missing", verdicts: []precisionVerdict{{Index: 4}, {Index: 6}}, first: 4, last: 6, wantErr: true},
+		{name: "prior batch", verdicts: []precisionVerdict{{Index: 3}, {Index: 4}, {Index: 5}}, first: 4, last: 6, wantErr: true},
+		{name: "future batch", verdicts: []precisionVerdict{{Index: 4}, {Index: 5}, {Index: 7}}, first: 4, last: 6, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validatePrecisionVerdictIndexes(tt.verdicts, tt.first, tt.last)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validatePrecisionVerdictIndexes() error = %v, want error %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestPrecisionInvalidIndexSetFailsWholeBatchClosed(t *testing.T) {
+	t.Parallel()
+	llm := &fakeLLM{precision: `{"verdicts":[{"i":1,"supported":true,"reason":""},{"i":1,"supported":true,"reason":""}]}`}
+	res, err := checkPrecision(context.Background(), llm, testPrompts(), "- fact", []string{"One.", "Two."}, 80, nil, 0, 1, 0)
+	if err != nil {
+		t.Fatalf("checkPrecision: %v", err)
+	}
+	if res.Supported != 0 || len(res.Unsupported) != 2 {
+		t.Fatalf("invalid set should mark the entire batch unsupported, got %+v", res)
+	}
+	for _, unsupported := range res.Unsupported {
+		if unsupported.Reason != "precision judge returned invalid verdict index set" {
+			t.Fatalf("unsupported reason = %q", unsupported.Reason)
+		}
+	}
+}
+
+func TestPrecisionRejectsCrossBatchIndexes(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		index int
+	}{
+		{name: "prior", index: 1},
+		{name: "future", index: 4},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			llm := &fakeLLM{precisionRecords: []string{
+				`{"verdicts":[{"i":1,"supported":true,"reason":""},{"i":2,"supported":true,"reason":""}]}`,
+				fmt.Sprintf(`{"verdicts":[{"i":%d,"supported":true,"reason":""},{"i":3,"supported":true,"reason":""}]}`, tt.index),
+			}}
+			res, err := checkPrecision(context.Background(), llm, testPrompts(), "- fact", []string{"One.", "Two.", "Three."}, 2, nil, 0, 1, 0)
+			if err != nil {
+				t.Fatalf("checkPrecision: %v", err)
+			}
+			if res.Supported != 2 || len(res.Unsupported) != 1 {
+				t.Fatalf("cross-batch index should invalidate only batch two, got %+v", res)
+			}
+			if got := res.Unsupported[0]; got.Index != 3 || got.Reason != "precision judge returned invalid verdict index set" {
+				t.Fatalf("unexpected unsupported sentence: %+v", got)
+			}
+		})
 	}
 }
 

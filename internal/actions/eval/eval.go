@@ -51,24 +51,26 @@ type CandidateResult struct {
 // writes per-candidate judgments.jsonl + summary.md, and a ranked INDEX.md, and
 // returns the candidates sorted by F1 (descending).
 func Run(ctx context.Context, llm Completer, p *prompts.Set, opts Options) ([]CandidateResult, error) {
-	ids, err := chunkIDs(opts.ChunksDir)
+	corpus, err := loadJudgeCorpora(opts)
 	if err != nil {
 		return nil, err
 	}
-	if len(ids) == 0 {
+	if len(corpus.ids) == 0 {
 		return nil, fmt.Errorf("eval: no chunk-*.md files in %s", opts.ChunksDir)
 	}
 
 	var results []CandidateResult
-	for _, dir := range opts.CandidateDirs {
-		name := candidateName(dir)
+	for _, candidate := range corpus.candidates {
 		var evals []ChunkEvaluation
 		var perChunk []Metrics
-		for _, id := range ids {
-			src := readFileOrEmpty(filepath.Join(opts.ChunksDir, id+".md"))
-			ref := readFileOrEmpty(filepath.Join(opts.ReferenceDir, id+".md"))
-			cand := readFileOrEmpty(filepath.Join(dir, id+".md"))
-			ev := judgeChunk(ctx, llm, p, judgeInput{id: id, name: name, source: src, reference: ref, candidate: cand})
+		for _, id := range corpus.ids {
+			ev := judgeChunk(ctx, llm, p, judgeInput{
+				id:        id,
+				name:      candidate.name,
+				source:    corpus.source[id],
+				reference: corpus.reference[id],
+				candidate: candidate.chunks[id],
+			})
 			evals = append(evals, ev)
 			perChunk = append(perChunk, ev.Metrics)
 		}
@@ -79,13 +81,13 @@ func Run(ctx context.Context, llm Completer, p *prompts.Set, opts Options) ([]Ca
 				parseErrors++
 			}
 		}
-		if err := writeJudgments(opts.OutDir, name, evals); err != nil {
+		if err := writeJudgments(opts.OutDir, candidate.name, evals); err != nil {
 			return nil, err
 		}
-		if err := writeSummary(opts.OutDir, name, evals, agg); err != nil {
+		if err := writeSummary(opts.OutDir, candidate.name, evals, agg); err != nil {
 			return nil, err
 		}
-		results = append(results, CandidateResult{Name: name, Metrics: agg, ParseErrors: parseErrors})
+		results = append(results, CandidateResult{Name: candidate.name, Metrics: agg, ParseErrors: parseErrors})
 	}
 
 	sort.SliceStable(results, func(i, j int) bool {
@@ -98,6 +100,124 @@ func Run(ctx context.Context, llm Completer, p *prompts.Set, opts Options) ([]Ca
 		return nil, err
 	}
 	return results, nil
+}
+
+// judgeCorpus holds every input needed for a judge run. Loading it before any
+// completion or output write makes malformed corpora fail without partial,
+// paid evaluation artifacts.
+type judgeCorpus struct {
+	ids        []string
+	source     map[string]string
+	reference  map[string]string
+	candidates []loadedCandidate
+}
+
+type loadedCandidate struct {
+	name   string
+	chunks map[string]string
+}
+
+// loadJudgeCorpora inventories and reads every input corpus. The source chunk
+// names define the exact required set for the reference and every candidate.
+func loadJudgeCorpora(opts Options) (judgeCorpus, error) {
+	source, err := loadChunkSet("source", opts.ChunksDir)
+	if err != nil {
+		return judgeCorpus{}, err
+	}
+	ids := sortedChunkIDs(source)
+
+	reference, err := loadChunkSet("reference", opts.ReferenceDir)
+	if err != nil {
+		return judgeCorpus{}, err
+	}
+	if err := validateChunkSet("reference", opts.ReferenceDir, "", ids, reference); err != nil {
+		return judgeCorpus{}, err
+	}
+
+	corpus := judgeCorpus{ids: ids, source: source, reference: reference}
+	for _, dir := range opts.CandidateDirs {
+		name := candidateName(dir)
+		chunks, err := loadChunkSet("candidate", dir)
+		if err != nil {
+			return judgeCorpus{}, fmt.Errorf("eval: candidate %q: %w", name, err)
+		}
+		if err := validateChunkSet("candidate", dir, name, ids, chunks); err != nil {
+			return judgeCorpus{}, err
+		}
+		corpus.candidates = append(corpus.candidates, loadedCandidate{name: name, chunks: chunks})
+	}
+	return corpus, nil
+}
+
+// loadChunkSet reads regular chunk-*.md files only. Empty files are preserved
+// as valid empty strings; nonmatching names are deliberately ignored.
+func loadChunkSet(kind, dir string) (map[string]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("eval: reading %s directory %q: %w", kind, dir, err)
+	}
+	chunks := make(map[string]string)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !isChunkFile(name) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("eval: reading %s chunk %q: %w", kind, path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("eval: %s chunk %q is not a readable regular file", kind, path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("eval: reading %s chunk %q: %w", kind, path, err)
+		}
+		chunks[strings.TrimSuffix(name, ".md")] = string(data)
+	}
+	return chunks, nil
+}
+
+func isChunkFile(name string) bool {
+	return strings.HasPrefix(name, "chunk-") && strings.HasSuffix(name, ".md")
+}
+
+// validateChunkSet requires the reference or candidate corpus to have exactly
+// the source chunk names. It reports the first stable difference.
+func validateChunkSet(kind, dir, candidate string, expected []string, actual map[string]string) error {
+	for _, id := range expected {
+		if _, ok := actual[id]; !ok {
+			return chunkSetMismatch(kind, dir, candidate, "missing "+id+".md")
+		}
+	}
+	for _, id := range sortedChunkIDs(actual) {
+		if !containsChunkID(expected, id) {
+			return chunkSetMismatch(kind, dir, candidate, "extra "+id+".md")
+		}
+	}
+	return nil
+}
+
+func chunkSetMismatch(kind, dir, candidate, detail string) error {
+	if kind == "candidate" {
+		return fmt.Errorf("eval: candidate %q chunk set mismatch: %s", candidate, detail)
+	}
+	return fmt.Errorf("eval: %s %q chunk set mismatch: %s", kind, dir, detail)
+}
+
+func sortedChunkIDs(chunks map[string]string) []string {
+	ids := make([]string, 0, len(chunks))
+	for id := range chunks {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func containsChunkID(ids []string, want string) bool {
+	i := sort.SearchStrings(ids, want)
+	return i < len(ids) && ids[i] == want
 }
 
 // judgeInput bundles the per-(candidate, chunk) texts for one judge call.
@@ -127,23 +247,6 @@ func judgeChunk(ctx context.Context, llm Completer, p *prompts.Set, in judgeInpu
 	return ev
 }
 
-// chunkIDs returns sorted chunk ids ("chunk-001", …) from the chunks dir.
-func chunkIDs(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("eval: reading chunks dir %s: %w", dir, err)
-	}
-	var ids []string
-	for _, e := range entries {
-		n := e.Name()
-		if strings.HasPrefix(n, "chunk-") && strings.HasSuffix(n, ".md") {
-			ids = append(ids, strings.TrimSuffix(n, ".md"))
-		}
-	}
-	sort.Strings(ids)
-	return ids, nil
-}
-
 // candidateName derives a label from a response dir: the dir name, or its parent
 // when the dir is literally "responses" (digest's artifact layout).
 func candidateName(dir string) string {
@@ -153,14 +256,6 @@ func candidateName(dir string) string {
 		return filepath.Base(filepath.Dir(clean))
 	}
 	return base
-}
-
-func readFileOrEmpty(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(data)
 }
 
 func writeJudgments(outDir, name string, evals []ChunkEvaluation) error {

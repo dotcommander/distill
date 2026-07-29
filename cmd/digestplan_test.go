@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 
 	"github.com/dotcommander/distill/internal/actions/digest"
@@ -12,6 +14,111 @@ import (
 	"path/filepath"
 	"testing"
 )
+
+func TestRunDigestRejectsInvalidArtifactsBeforeClientSetup(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# Source\n\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifactDir := filepath.Join(dir, "artifacts")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "sentinel"), []byte("preserve"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runDigest(&runContext{ctx: context.Background(), in: strings.NewReader(""), out: io.Discard, errOut: io.Discard}, []string{sourcePath}, &digestFlags{
+		model:     "test-model",
+		artifacts: artifactDir,
+		chunkSize: 1000,
+		maxTokens: 0,
+		noEdit:    true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "source marker missing") {
+		t.Fatalf("runDigest error = %v, want missing marker refusal before client setup", err)
+	}
+	data, err := os.ReadFile(filepath.Join(artifactDir, "sentinel"))
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if string(data) != "preserve" {
+		t.Fatalf("sentinel changed: %q", data)
+	}
+}
+
+func TestRunDigestDryRunDoesNotCreateAbsentArtifactDirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# Source\n\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifactDir := filepath.Join(dir, "absent-artifacts")
+
+	err := runDigest(&runContext{ctx: context.Background(), in: strings.NewReader(""), out: io.Discard, errOut: io.Discard}, []string{sourcePath}, &digestFlags{
+		model:     "test-model",
+		artifacts: artifactDir,
+		chunkSize: 1000,
+		maxTokens: 0,
+		dryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("runDigest dry-run: %v", err)
+	}
+	if _, err := os.Stat(artifactDir); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created artifact directory: %v", err)
+	}
+}
+
+func TestRunDigestRejectsNegativeMaxCallsBeforeArtifactMutation(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# Source\n\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifactDir := filepath.Join(dir, "artifacts")
+	var stderr bytes.Buffer
+	err := runDigest(&runContext{ctx: context.Background(), in: strings.NewReader(""), out: io.Discard, errOut: &stderr}, []string{sourcePath}, &digestFlags{
+		model:     "test-model",
+		artifacts: artifactDir,
+		chunkSize: 1000,
+		maxCalls:  -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--max-calls") {
+		t.Fatalf("runDigest error = %v, want max-calls validation", err)
+	}
+	if _, statErr := os.Stat(artifactDir); !os.IsNotExist(statErr) {
+		t.Fatalf("negative max-calls mutated artifacts: %v", statErr)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("negative max-calls wrote summary: %q", stderr.String())
+	}
+}
+
+func TestRunDigestDryRunPrintsFiniteRequestBudget(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# Source\n\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	err := runDigest(&runContext{ctx: context.Background(), in: strings.NewReader(""), out: io.Discard, errOut: &stderr}, []string{sourcePath}, &digestFlags{
+		model:     "test-model",
+		artifacts: filepath.Join(dir, "artifacts"),
+		chunkSize: 1000,
+		maxCalls:  1,
+		dryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("runDigest dry-run: %v", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "request budget: 0/1") {
+		t.Fatalf("stderr missing finite summary: %q", got)
+	}
+}
 
 func TestPlannedDigestCallsIgnoresUnverifiedArtifacts(t *testing.T) {
 	t.Parallel()

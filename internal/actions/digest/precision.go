@@ -59,10 +59,11 @@ func checkPrecision(ctx context.Context, llm Completer, p *prompts.Set, facts st
 		}
 		verdicts, ok := parsePrecisionVerdicts(out)
 		if !ok {
-			slog.WarnContext(ctx, "digest precision returned malformed JSON; marking batch unsupported", "batch", name)
-			for i, sentence := range batch {
-				result.Unsupported = append(result.Unsupported, UnsupportedSentence{Index: start + i + 1, Sentence: sentence, Reason: "precision judge returned malformed JSON"})
-			}
+			result.Unsupported = appendUnsupportedPrecisionBatch(result.Unsupported, batch, start, "precision judge returned malformed JSON")
+			continue
+		}
+		if err := validatePrecisionVerdictIndexes(verdicts, start+1, end); err != nil {
+			result.Unsupported = appendUnsupportedPrecisionBatch(result.Unsupported, batch, start, "precision judge returned invalid verdict index set")
 			continue
 		}
 		byIndex := make(map[int]precisionVerdict, len(verdicts))
@@ -87,6 +88,35 @@ func checkPrecision(ctx context.Context, llm Completer, p *prompts.Set, facts st
 		result.Precision = float64(result.Supported) / float64(result.Total)
 	}
 	return result, nil
+}
+
+// validatePrecisionVerdictIndexes requires exactly one verdict for every
+// displayed global sentence index in the inclusive batch range.
+func validatePrecisionVerdictIndexes(verdicts []precisionVerdict, first, last int) error {
+	if first < 1 || last < first {
+		return fmt.Errorf("invalid precision verdict index range [%d,%d]", first, last)
+	}
+	seen := make(map[int]struct{}, len(verdicts))
+	for _, verdict := range verdicts {
+		if verdict.Index < first || verdict.Index > last {
+			return fmt.Errorf("precision verdict index %d outside batch range [%d,%d]", verdict.Index, first, last)
+		}
+		if _, ok := seen[verdict.Index]; ok {
+			return fmt.Errorf("duplicate precision verdict index %d", verdict.Index)
+		}
+		seen[verdict.Index] = struct{}{}
+	}
+	if len(seen) != last-first+1 {
+		return fmt.Errorf("missing precision verdict index in batch range [%d,%d]", first, last)
+	}
+	return nil
+}
+
+func appendUnsupportedPrecisionBatch(unsupported []UnsupportedSentence, batch []string, start int, reason string) []UnsupportedSentence {
+	for i, sentence := range batch {
+		unsupported = append(unsupported, UnsupportedSentence{Index: start + i + 1, Sentence: sentence, Reason: reason})
+	}
+	return unsupported
 }
 
 func parsePrecisionVerdicts(s string) ([]precisionVerdict, bool) {

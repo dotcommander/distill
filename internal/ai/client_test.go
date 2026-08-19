@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"github.com/garyblankenship/wormhole/v3/types"
 )
 
 func TestCompleteSendsProviderOptions(t *testing.T) {
@@ -194,6 +196,8 @@ func TestRequestBudgetPreventsTextSend(t *testing.T) {
 }
 
 func TestRetryClassificationExcludesCallerAndBudgetFailures(t *testing.T) {
+	t.Parallel()
+
 	if !IsRetryable(ErrEmptyResponse) {
 		t.Fatal("empty response should be retryable")
 	}
@@ -207,6 +211,16 @@ func TestRetryClassificationExcludesCallerAndBudgetFailures(t *testing.T) {
 	}
 	if got := ErrorClass(ErrRequestBudgetExhausted); got != "budget" {
 		t.Fatalf("ErrorClass(budget) = %q", got)
+	}
+	truncated := types.NewIncompleteGenerationError(&types.TextResponse{FinishReason: types.FinishReasonLength})
+	if IsSystemic(truncated) {
+		t.Fatal("truncated generation should not be systemic")
+	}
+	if IsRetryable(truncated) {
+		t.Fatal("truncated generation should not be retried automatically")
+	}
+	if got := ErrorClass(truncated); got != string(types.ErrorClassTruncation) {
+		t.Fatalf("ErrorClass(truncated) = %q", got)
 	}
 }
 

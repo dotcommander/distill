@@ -38,7 +38,7 @@ func IsSystemic(err error) bool {
 	switch types.ClassifyError(err) {
 	case types.ErrorClassAuth, types.ErrorClassQuota, types.ErrorClassNetwork:
 		return true
-	case types.ErrorClassTransient, types.ErrorClassRateLimit, types.ErrorClassConfig, types.ErrorClassTimeout, types.ErrorClassUnknown:
+	case types.ErrorClassTransient, types.ErrorClassRateLimit, types.ErrorClassConfig, types.ErrorClassTruncation, types.ErrorClassTimeout, types.ErrorClassUnknown:
 		return false
 	}
 	return false
@@ -61,7 +61,7 @@ func IsRetryable(err error) bool {
 	switch types.ClassifyError(err) {
 	case types.ErrorClassTransient, types.ErrorClassRateLimit, types.ErrorClassTimeout:
 		return true
-	case types.ErrorClassQuota, types.ErrorClassAuth, types.ErrorClassConfig, types.ErrorClassNetwork, types.ErrorClassUnknown:
+	case types.ErrorClassQuota, types.ErrorClassAuth, types.ErrorClassConfig, types.ErrorClassTruncation, types.ErrorClassNetwork, types.ErrorClassUnknown:
 		return false
 	}
 	return false

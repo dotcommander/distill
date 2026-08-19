@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/garyblankenship/wormhole/pkg/types"
+	"github.com/garyblankenship/wormhole/v3/types"
 )
 
 // embedBatchSize bounds inputs per embeddings request, matching the prior remote

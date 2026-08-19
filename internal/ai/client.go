@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/garyblankenship/wormhole/pkg/types"
-	"github.com/garyblankenship/wormhole/pkg/wormhole"
+	"github.com/garyblankenship/wormhole/v3"
+	"github.com/garyblankenship/wormhole/v3/types"
 )
 
 // ErrEmptyResponse is returned by Complete when the model produces no content.
